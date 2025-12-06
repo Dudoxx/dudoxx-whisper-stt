@@ -1,10 +1,22 @@
-# Dudoxx Whisper STT
+<p align="center">
+  <img src="assets/branding/toucan_transparent.png" alt="Dudoxx Logo" width="120" />
+</p>
 
-**Ultra-low-latency, self-hosted speech-to-text for healthcare applications**
+<h1 align="center">Dudoxx Whisper STT</h1>
 
-[![Based on WhisperLiveKit](https://img.shields.io/badge/Based%20on-WhisperLiveKit-blue)](https://github.com/QuentinFuxa/WhisperLiveKit)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-green.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+<p align="center">
+  <strong>Port:</strong> 4300 | <strong>EXPERIMENTAL</strong> | <strong>Self-Hosted</strong>
+</p>
+
+<p align="center">
+  Ultra-low-latency, self-hosted speech-to-text for healthcare applications
+</p>
+
+<p align="center">
+  <a href="https://github.com/QuentinFuxa/WhisperLiveKit"><img src="https://img.shields.io/badge/Based%20on-WhisperLiveKit-blue" alt="Based on WhisperLiveKit"/></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python 3.9+"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License"/></a>
+</p>
 
 ---
 

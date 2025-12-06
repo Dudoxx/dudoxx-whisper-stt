@@ -145,8 +145,8 @@ class TranscriptionEngine:
                 from whisperlivekit.diarization.diart_backend import DiartDiarization
 
                 diart_params = {
-                    "segmentation_model": "pyannote/segmentation-3.0",
-                    "embedding_model": "pyannote/embedding",
+                    "segmentation_model_name": "pyannote/segmentation-3.0",
+                    "embedding_model_name": "pyannote/embedding",
                 }
                 diart_params = update_with_kwargs(diart_params, kwargs)
                 self.diarization_model = DiartDiarization(

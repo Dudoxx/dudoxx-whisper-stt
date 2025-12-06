@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dudoxx-whisper-stt"
-version = "1.0.0"
+version = "1.1.0"
 description = "Dudoxx Real-time Speech-to-Text - Ultra-low-latency transcription for healthcare (based on WhisperLiveKit)"
 readme = "README.md"
 authors = [
@@ -15,13 +15,12 @@ maintainers = [
     { name = "Walid Boudabbous", email = "w.boudabbous@dudoxx.com" }
 ]
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Healthcare Industry",
     "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -33,12 +32,12 @@ classifiers = [
 dependencies = [
     "fastapi",
     "librosa",
-    "soundfile",
+    "soundfile>=0.13.1",
     "uvicorn",
     "websockets",
-    "torchaudio>=2.0.0",
-    "torch>=2.0.0",
-    "huggingface-hub>=0.25.0",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "huggingface-hub>=1.0.0",
     "tqdm",
     "tiktoken",
     'triton>=2.0.0; platform_machine == "x86_64" and (sys_platform == "linux" or sys_platform == "linux2")'
@@ -47,7 +46,12 @@ dependencies = [
 [project.optional-dependencies]
 translation = ["nllw"]
 sentence_tokenizer = ["mosestokenizer", "wtpsplit"]
-macos = ["mlx-whisper"]
+macos = ["mlx-whisper>=0.4.0"]
+diarization = [
+    "pyannote.audio>=4.0.0",
+    "diart>=0.9.0",
+    "rx>=3.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/Dudoxx/dudoxx-whisper-stt"

@@ -1,3 +1,17 @@
+# PyTorch 2.8+ compatibility: Add safe globals for model loading
+# Must be done before any pyannote/diart imports
+import torch
+from torch import torch_version
+
+torch.serialization.add_safe_globals([torch_version.TorchVersion])
+
+try:
+    from pyannote.audio.core.task import Specifications, Problem, Resolution
+
+    torch.serialization.add_safe_globals([Specifications, Problem, Resolution])
+except ImportError:
+    pass  # pyannote.audio not installed
+
 from .audio_processor import AudioProcessor
 from .core import TranscriptionEngine
 from .parse_args import parse_args
