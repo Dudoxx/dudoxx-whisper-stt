@@ -9,6 +9,7 @@ let websocket = null;
 let recorder = null;
 let chunkDuration = 100;
 let websocketUrl = "ws://localhost:8000/asr";
+let selectedLanguage = localStorage.getItem('selectedLanguage') || 'auto';
 let userClosing = false;
 let wakeLock = null;
 let startTime = null;
@@ -45,6 +46,7 @@ const linesTranscriptDiv = document.getElementById("linesTranscript");
 const timerElement = document.querySelector(".timer");
 const themeRadios = document.querySelectorAll('input[name="theme"]');
 const microphoneSelect = document.getElementById("microphoneSelect");
+const languageSelect = document.getElementById("languageSelect");
 
 const settingsToggle = document.getElementById("settingsToggle");
 const settingsDiv = document.querySelector(".settings");
@@ -187,12 +189,46 @@ if (isExtension) {
     port = window.location.port;
     protocol = window.location.protocol === "https:" ? "wss" : "ws";
 }
-const defaultWebSocketUrl = `${protocol}://${host}${port ? ":" + port : ""}/asr`;
+
+function getWebSocketUrl() {
+    const baseUrl = `${protocol}://${host}${port ? ":" + port : ""}/asr`;
+    if (selectedLanguage && selectedLanguage !== 'auto') {
+        return `${baseUrl}?language=${selectedLanguage}`;
+    }
+    return baseUrl;
+}
+
+const defaultWebSocketUrl = getWebSocketUrl();
 
 // Populate default caption and input
 if (websocketDefaultSpan) websocketDefaultSpan.textContent = defaultWebSocketUrl;
 websocketInput.value = defaultWebSocketUrl;
 websocketUrl = defaultWebSocketUrl;
+
+// Language selector handling
+if (languageSelect) {
+    // Set saved language
+    languageSelect.value = selectedLanguage;
+    
+    languageSelect.addEventListener("change", () => {
+        selectedLanguage = languageSelect.value;
+        localStorage.setItem('selectedLanguage', selectedLanguage);
+        
+        // Update WebSocket URL
+        websocketUrl = getWebSocketUrl();
+        websocketInput.value = websocketUrl;
+        
+        const langName = languageSelect.options[languageSelect.selectedIndex].text;
+        statusText.textContent = `Language changed to: ${langName}. Ready to record.`;
+        console.log(`Selected language: ${selectedLanguage}`);
+        
+        // If recording, stop and notify user to restart
+        if (isRecording) {
+            statusText.textContent = `Language changed to: ${langName}. Stopping recording... Please start again.`;
+            stopRecording();
+        }
+    });
+}
 
 // Optional chunk selector (guard for presence)
 if (chunkSelector) {
@@ -215,7 +251,10 @@ websocketInput.addEventListener("change", () => {
 function setupWebSocket() {
   return new Promise((resolve, reject) => {
     try {
-      websocket = new WebSocket(websocketUrl);
+      // Always use the latest URL with language parameter
+      const currentUrl = getWebSocketUrl();
+      console.log(`Connecting to WebSocket: ${currentUrl}`);
+      websocket = new WebSocket(currentUrl);
     } catch (error) {
       statusText.textContent = "Invalid WebSocket URL. Please check and try again.";
       reject(error);
