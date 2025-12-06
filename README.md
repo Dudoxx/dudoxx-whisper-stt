@@ -44,18 +44,18 @@ pip install mlx-whisper
 # Start on default port 8000
 dudoxx-stt --model base --language en
 
-# Start on custom port (e.g., 4200 for Dudoxx integration)
-dudoxx-stt --model base --language en --port 4200
+# Start on custom port (e.g., 4300 for Dudoxx integration)
+dudoxx-stt --model base --language en --port 4300
 
 # With speaker diarization
-dudoxx-stt --model medium --language en --port 4200 --diarization
+dudoxx-stt --model medium --language en --port 4300 --diarization
 ```
 
 ### Access the Demo
 
 Open your browser and navigate to:
 - **Default:** http://localhost:8000
-- **Custom port:** http://localhost:4200
+- **Dudoxx port:** http://localhost:4300
 
 ## Configuration Options
 
@@ -82,7 +82,7 @@ Open your browser and navigate to:
 │   └─────────────────────────────────────────────────────────┘   │
 │                          │                                      │
 │                          ▼                                      │
-│   FastAPI Server (Port 4200)                                    │
+│   FastAPI Server (Port 4300)                                    │
 │   ┌─────────────────────────────────────────────────────────┐   │
 │   │  WebSocket Handler → Audio Processor                    │   │
 │   │                          ↓                              │   │
@@ -118,7 +118,8 @@ This service integrates with the Dudoxx FHIR Clinic Platform for:
 |---------|------|
 | Next.js Frontend | 4000 |
 | NestJS Backend | 4100 |
-| **Dudoxx Whisper STT** | **4200** |
+| Calendar Microservice | 4200 |
+| **Dudoxx Whisper STT** | **4300** |
 | HAPI FHIR Server | 8080 |
 | Jitsi Meet | 8543 |
 
@@ -150,7 +151,7 @@ dudoxx-whisper-stt/
 pip install -e .
 
 # Run with auto-reload (development)
-uvicorn whisperlivekit.basic_server:app --reload --port 4200
+uvicorn whisperlivekit.basic_server:app --reload --port 4300
 ```
 
 ## Docker Deployment
@@ -160,11 +161,11 @@ uvicorn whisperlivekit.basic_server:app --reload --port 4200
 docker build -f Dockerfile.cpu -t dudoxx-whisper-stt .
 
 # Run container
-docker run -p 4200:8000 --name dudoxx-stt dudoxx-whisper-stt --model base --language en
+docker run -p 4300:8000 --name dudoxx-stt dudoxx-whisper-stt --model base --language en
 
 # With GPU support
 docker build -t dudoxx-whisper-stt .
-docker run --gpus all -p 4200:8000 --name dudoxx-stt dudoxx-whisper-stt
+docker run --gpus all -p 4300:8000 --name dudoxx-stt dudoxx-whisper-stt
 ```
 
 ## Credits
