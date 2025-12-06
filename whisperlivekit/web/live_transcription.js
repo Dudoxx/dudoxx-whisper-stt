@@ -424,6 +424,13 @@ function renderLinesWithBuffer(
         if (item.detected_language) {
           speakerLabel += `<span class="label_language">${languageIcon}<span>${item.detected_language}</span></span>`;
         }
+        
+        // Display confidence score if available
+        if (item.confidence !== undefined && item.confidence !== null) {
+          const confidencePercent = Math.round(item.confidence * 100);
+          const confidenceClass = confidencePercent >= 80 ? 'high' : confidencePercent >= 50 ? 'medium' : 'low';
+          speakerLabel += `<span class="label_confidence confidence-${confidenceClass}">${confidencePercent}%</span>`;
+        }
       }
 
       let currentLineText = item.text || "";

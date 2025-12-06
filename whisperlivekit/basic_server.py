@@ -103,14 +103,25 @@ async def get():
 
 @app.get("/api/config")
 async def get_config():
-    """Return server configuration including supported languages."""
+    """Return server configuration including supported languages and features."""
     return JSONResponse(
         {
             "supported_languages": SUPPORTED_LANGUAGES,
             "default_language": args.lan or "auto",
             "model": getattr(args, "model_size", "base"),
-            "diarization": getattr(args, "diarization", False),
             "backend": getattr(args, "backend", "auto"),
+            "features": {
+                "diarization": getattr(args, "diarization", False),
+                "diarization_backend": getattr(
+                    args, "diarization_backend", "sortformer"
+                ),
+                "translation": bool(getattr(args, "target_language", "")),
+                "vad": getattr(args, "vad", True),
+                "confidence_scores": True,  # Now supported
+                "word_timestamps": True,
+                "language_detection": args.lan == "auto",
+            },
+            "version": "1.1.0",
         }
     )
 

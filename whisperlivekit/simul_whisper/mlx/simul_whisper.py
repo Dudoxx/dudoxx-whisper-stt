@@ -1,6 +1,7 @@
 """
 MLX whisper AlignAtt streaming decoder
 """
+
 import logging
 from time import time
 from typing import Any, List, Optional, Tuple
@@ -23,7 +24,7 @@ DEC_PAD = 50257
 logger = logging.getLogger(__name__)
 
 
-class MLXTokenBuffer: #should try to make it heritate from classic simul whisper class
+class MLXTokenBuffer:  # should try to make it heritate from classic simul whisper class
     """Token buffer for MLX-based decoding."""
 
     def __init__(self, text="", tokenizer=None, prefix_token_ids=None):
@@ -102,40 +103,40 @@ class MLXTokenBuffer: #should try to make it heritate from classic simul whisper
 def mlx_median_filter(x: mx.array, filter_width: int) -> mx.array:
     """
     Apply median filter along the last axis.
-    
+
     Args:
         x: Input array of shape (..., T)
         filter_width: Width of the median filter (should be odd)
-        
+
     Returns:
         Filtered array of same shape
     """
     if filter_width <= 1:
         return x
-    
+
     pad_width = filter_width // 2
     shape = x.shape
-    
+
     left_pad = mx.repeat(x[..., :1], pad_width, axis=-1)
     right_pad = mx.repeat(x[..., -1:], pad_width, axis=-1)
     x_padded = mx.concatenate([left_pad, x, right_pad], axis=-1)
-    
+
     result_shape = list(shape)
     result = []
-    
+
     for i in range(shape[-1]):
-        window = x_padded[..., i:i + filter_width]
+        window = x_padded[..., i : i + filter_width]
         sorted_window = mx.sort(window, axis=-1)
-        median_val = sorted_window[..., filter_width // 2:filter_width // 2 + 1]
+        median_val = sorted_window[..., filter_width // 2 : filter_width // 2 + 1]
         result.append(median_val)
-    
+
     return mx.concatenate(result, axis=-1)
 
 
 class MLXAlignAtt:
     """
     MLX-native Alignment-based Attention decoder for SimulStreaming.
-    
+
     This class runs entirely on MLX, with no PyTorch dependencies for inference.
     """
 
@@ -162,23 +163,21 @@ class MLXAlignAtt:
     ) -> None:
         """
         Initialize MLX AlignAtt decoder.
-        
+
         Args:
             cfg: AlignAtt configuration
             mlx_model: MLX Whisper model (full model, not just encoder)
         """
         self.model = mlx_model
         self.cfg = cfg
-        
+
         logger.info(f"MLX Model dimensions: {self.model.dims}")
-        
+
         self.decode_options = DecodingOptions(
-            language=cfg.language,
-            without_timestamps=True,
-            task=cfg.task
+            language=cfg.language, without_timestamps=True, task=cfg.task
         )
         self.tokenizer_is_multilingual = cfg.tokenizer_is_multilingual
-        
+
         self.max_text_len = self.model.dims.n_text_ctx
         self.num_decoder_layers = len(self.model.decoder.blocks)
 
@@ -208,7 +207,9 @@ class MLXAlignAtt:
                 self.state.always_fire = True
                 self.state.never_fire = False
         else:
-            logger.warning("CIF checkpoint provided but MLX CIF not implemented. Using always_fire=True")
+            logger.warning(
+                "CIF checkpoint provided but MLX CIF not implemented. Using always_fire=True"
+            )
             self.state.always_fire = True
             self.state.never_fire = cfg.never_fire
 
@@ -236,29 +237,31 @@ class MLXAlignAtt:
             self.state.token_decoder = MLXGreedyDecoder(0.0, self.tokenizer.eot)
         elif cfg.decoder_type == "beam":
             logger.info("Using MLX beam decoder")
-            self.state.inference = MLXInference(self.model, self.state.initial_token_length)
+            self.state.inference = MLXInference(
+                self.model, self.state.initial_token_length
+            )
             self.state.token_decoder = MLXBeamSearchDecoder(
                 inference=self.state.inference,
                 eot=self.tokenizer.eot,
-                beam_size=cfg.beam_size
+                beam_size=cfg.beam_size,
             )
 
     def _build_alignment_source(self):
         """Build alignment source mapping from model's alignment_heads."""
         self.state.align_source = {}
         self.state.num_align_heads = 0
-        
+
         alignment_heads = self.model.alignment_heads
-        
+
         if alignment_heads is None:
             logger.warning("No alignment heads found in model")
             return
-            
-        if hasattr(alignment_heads, 'tolist'):
+
+        if hasattr(alignment_heads, "tolist"):
             heads_list = alignment_heads.tolist()
         else:
             heads_list = np.array(alignment_heads).tolist()
-            
+
         for layer_rank, head_id in heads_list:
             layer_rank = int(layer_rank)
             head_id = int(head_id)
@@ -283,19 +286,21 @@ class MLXAlignAtt:
             multilingual=self.tokenizer_is_multilingual,
             language=language,
             num_languages=self.model.num_languages,
-            task=self.decode_options.task
+            task=self.decode_options.task,
         )
         self.state.tokenizer = self.tokenizer
 
     def init_context(self):
         """Initialize context buffer."""
         kw = {
-            'tokenizer': self.tokenizer,
-            'prefix_token_ids': [self.tokenizer.sot_prev]
+            "tokenizer": self.tokenizer,
+            "prefix_token_ids": [self.tokenizer.sot_prev],
         }
         self.state.context = MLXTokenBuffer.empty(**kw)
         if self.cfg.static_init_prompt is not None:
-            self.state.context = MLXTokenBuffer.from_text(self.cfg.static_init_prompt, **kw)
+            self.state.context = MLXTokenBuffer.from_text(
+                self.cfg.static_init_prompt, **kw
+            )
         if self.cfg.init_prompt is not None:
             self.state.context.text += self.cfg.init_prompt
 
@@ -303,8 +308,7 @@ class MLXAlignAtt:
         """Initialize token sequence."""
         logger.debug(f"init tokens, {len(self.state.segments)}")
         self.state.initial_tokens = mx.array(
-            [self.tokenizer.sot_sequence_including_notimestamps],
-            dtype=mx.int32
+            [self.tokenizer.sot_sequence_including_notimestamps], dtype=mx.int32
         )
         self.state.initial_token_length = self.state.initial_tokens.shape[1]
         self.state.sot_index = self.tokenizer.sot_sequence.index(self.tokenizer.sot)
@@ -314,7 +318,9 @@ class MLXAlignAtt:
     def trim_context(self):
         """Trim context if too long."""
         logger.info("Trimming context")
-        c = len(self.state.context.as_token_ids()) - len(self.state.context.prefix_token_ids)
+        c = len(self.state.context.as_token_ids()) - len(
+            self.state.context.prefix_token_ids
+        )
         logger.info(f"Context text: {self.state.context.as_text()}")
         l = sum(t.shape[1] for t in self.state.tokens) + c
         if self.cfg.static_init_prompt is None:
@@ -325,7 +331,9 @@ class MLXAlignAtt:
             t = self.state.context.trim_words(after=after)
             l -= t
             c -= t
-            logger.debug(f"len {l}, c {c}, max_context_tokens {self.max_context_tokens}")
+            logger.debug(
+                f"len {l}, c {c}, max_context_tokens {self.max_context_tokens}"
+            )
             if t == 0:
                 break
         logger.info(f"Context after trim: {self.state.context.text} (len: {l})")
@@ -357,7 +365,7 @@ class MLXAlignAtt:
     def _current_tokens(self) -> mx.array:
         """Get current token sequence for decoding."""
         toks = self.state.tokens
-        
+
         if toks[0].shape[0] == 1:
             toks[0] = mx.repeat(toks[0], self.cfg.beam_size, axis=0)
 
@@ -370,7 +378,7 @@ class MLXAlignAtt:
             current_tokens = mx.concatenate(toks, axis=1)
         else:
             current_tokens = toks[0]
-            
+
         logger.debug("debug print current_tokens:")
         self.debug_print_tokens(current_tokens)
         return current_tokens
@@ -396,27 +404,29 @@ class MLXAlignAtt:
     def insert_audio(self, segment: np.ndarray = None):
         """Insert audio segment into buffer."""
         if segment is not None:
-            if hasattr(segment, 'numpy'):
+            if hasattr(segment, "numpy"):
                 segment = segment.numpy()
             self.state.segments.append(segment)
 
         removed_len = 0
         segments_len = self.segments_len()
-        
+
         while len(self.state.segments) > 1 and segments_len > self.cfg.audio_max_len:
             removed_len = self.state.segments[0].shape[0] / 16000
             segments_len -= removed_len
             self.state.last_attend_frame -= int(TOKENS_PER_SECOND * removed_len)
             self.state.cumulative_time_offset += removed_len
             self.state.segments = self.state.segments[1:]
-            logger.debug(f"remove segments: {len(self.state.segments)} {len(self.state.tokens)}, cumulative offset: {self.state.cumulative_time_offset:.2f}s")
-            
+            logger.debug(
+                f"remove segments: {len(self.state.segments)} {len(self.state.tokens)}, cumulative offset: {self.state.cumulative_time_offset:.2f}s"
+            )
+
             if len(self.state.tokens) > 1:
                 # Convert MLX array to list for context
                 token_list = np.array(self.state.tokens[1][0, :]).tolist()
                 self.state.context.append_token_ids(token_list)
                 self.state.tokens = [self.state.initial_tokens] + self.state.tokens[2:]
-                
+
         return removed_len
 
     def _clean_cache(self):
@@ -426,33 +436,40 @@ class MLXAlignAtt:
     def _suppress_tokens(self, logits: mx.array) -> mx.array:
         """Apply token suppression to logits."""
         if self.state.suppress_tokens:
-            suppress_indices = mx.array(list(self.state.suppress_tokens), dtype=mx.int32)
-            logits = logits.at[:, suppress_indices].add(-float('inf'))
+            suppress_indices = mx.array(
+                list(self.state.suppress_tokens), dtype=mx.int32
+            )
+            logits = logits.at[:, suppress_indices].add(-float("inf"))
         return logits
 
     def lang_id(self, encoder_features: mx.array) -> Tuple[mx.array, List[dict]]:
         """Language detection from encoder features."""
         n_audio = encoder_features.shape[0]
         x = mx.array([[self.tokenizer.sot]] * n_audio, dtype=mx.int32)
-        
+
         logits, _, _ = self.model.decoder(x, encoder_features, kv_cache=None)
         logits = logits[:, 0]
-        
+
         mask = mx.ones(logits.shape[-1], dtype=mx.bool_)
-        language_token_indices = mx.array(list(self.tokenizer.all_language_tokens), dtype=mx.int32)
+        language_token_indices = mx.array(
+            list(self.tokenizer.all_language_tokens), dtype=mx.int32
+        )
         mask = mask.at[language_token_indices].add(False)
-        
-        logits = mx.where(mask, mx.array(-float('inf')), logits)
-        
+
+        logits = mx.where(mask, mx.array(-float("inf")), logits)
+
         language_tokens = mx.argmax(logits, axis=-1)
         language_token_probs = mx.softmax(logits, axis=-1)
-        
+
         probs_np = np.array(language_token_probs)
-        
+
         language_probs = [
             {
                 c: float(probs_np[i, j])
-                for j, c in zip(self.tokenizer.all_language_tokens, self.tokenizer.all_language_codes)
+                for j, c in zip(
+                    self.tokenizer.all_language_tokens,
+                    self.tokenizer.all_language_codes,
+                )
             }
             for i in range(n_audio)
         ]
@@ -463,21 +480,23 @@ class MLXAlignAtt:
     def infer(self, is_last: bool = False) -> List[ASRToken]:
         """
         Main inference method.
-        
+
         Args:
             is_last: Whether this is the final chunk
-            
+
         Returns:
             List of timestamped ASR tokens
         """
         new_segment = True
-        
+
         if len(self.state.segments) == 0:
             logger.debug("No segments, nothing to do")
             return []
-            
+
         if not self._apply_minseglen():
-            logger.debug(f"applied minseglen {self.cfg.audio_min_len} > {self.segments_len()}.")
+            logger.debug(
+                f"applied minseglen {self.cfg.audio_min_len} > {self.segments_len()}."
+            )
             return []
 
         if len(self.state.segments) > 1:
@@ -486,22 +505,24 @@ class MLXAlignAtt:
             input_segments = self.state.segments[0]
 
         beg_encode = time()
-        
+
         mlx_mel_padded = mlx_log_mel_spectrogram(
-            audio=input_segments,
-            n_mels=self.model.dims.n_mels,
-            padding=N_SAMPLES
+            audio=input_segments, n_mels=self.model.dims.n_mels, padding=N_SAMPLES
         )
         mlx_mel = mlx_pad_or_trim(mlx_mel_padded, N_FRAMES, axis=-2)
         encoder_feature = self.model.encoder(mlx_mel[None])
         content_mel_len = int((mlx_mel_padded.shape[0] - mlx_mel.shape[0]) / 2)
-        
-        mx.eval(encoder_feature)
-        
-        end_encode = time()
-        logger.debug(f'MLX Encoder duration: {end_encode - beg_encode:.3f}s')
 
-        if self.cfg.language == "auto" and self.state.detected_language is None and self.state.first_timestamp:
+        mx.eval(encoder_feature)
+
+        end_encode = time()
+        logger.debug(f"MLX Encoder duration: {end_encode - beg_encode:.3f}s")
+
+        if (
+            self.cfg.language == "auto"
+            and self.state.detected_language is None
+            and self.state.first_timestamp
+        ):
             seconds_since_start = self.segments_len() - self.state.first_timestamp
             if seconds_since_start >= 2.0:
                 language_tokens, language_probs = self.lang_id(encoder_feature)
@@ -521,6 +542,7 @@ class MLXAlignAtt:
         fire_detected = self.fire_at_boundary(encoder_feature[:, :content_mel_len, :])
 
         sum_logprobs = mx.zeros((self.cfg.beam_size,), dtype=mx.float32)
+        token_logprobs = []  # Track per-token logprobs for confidence calculation
         completed = False
 
         attn_of_alignment_heads = None
@@ -539,7 +561,9 @@ class MLXAlignAtt:
             tokens_produced_this_chunk += 1
 
             if tokens_produced_this_chunk > max_tokens_per_chunk:
-                logger.warning(f"[Loop Detection] Too many tokens ({tokens_produced_this_chunk}) for {audio_duration_s:.2f}s audio. Breaking.")
+                logger.warning(
+                    f"[Loop Detection] Too many tokens ({tokens_produced_this_chunk}) for {audio_duration_s:.2f}s audio. Breaking."
+                )
                 current_tokens = current_tokens[:, :token_len_before_decoding]
                 break
 
@@ -553,15 +577,19 @@ class MLXAlignAtt:
                     tokens_for_logits, encoder_feature, kv_cache=self.state.kv_cache
                 )
             else:
-                logits, cross_qk = self.state.inference.logits(tokens_for_logits, encoder_feature)
+                logits, cross_qk = self.state.inference.logits(
+                    tokens_for_logits, encoder_feature
+                )
 
             mx.eval(logits)
-            
+
             accumulated_cross_attns.append(cross_qk)
 
             if new_segment and self.tokenizer.no_speech is not None:
                 probs_at_sot = mx.softmax(logits[:, self.state.sot_index, :], axis=-1)
-                no_speech_probs = np.array(probs_at_sot[:, self.tokenizer.no_speech]).tolist()
+                no_speech_probs = np.array(
+                    probs_at_sot[:, self.tokenizer.no_speech]
+                ).tolist()
                 if no_speech_probs[0] > self.cfg.nonspeech_prob:
                     logger.info("no speech, stop")
                     break
@@ -571,15 +599,23 @@ class MLXAlignAtt:
             # Suppress tokens at segment start
             if new_segment:
                 blank_tokens = self.tokenizer.encode(" ") + [self.tokenizer.eot]
-                logits = logits.at[:, blank_tokens].add(-float('inf'))
+                logits = logits.at[:, blank_tokens].add(-float("inf"))
             new_segment = False
-            
+
             logits = self._suppress_tokens(logits)
-            
+
+            # Get token probabilities before update for confidence tracking
+            probs = mx.softmax(logits, axis=-1)
+
             current_tokens, completed = self.state.token_decoder.update(
                 current_tokens, logits, sum_logprobs
             )
             mx.eval(current_tokens)
+
+            # Track the probability of the selected token for confidence calculation
+            selected_token = int(np.array(current_tokens[0, -1]))
+            token_prob = float(np.array(probs[0, selected_token]))
+            token_logprobs.append(token_prob)
 
             logger.debug(f"Decoding completed: {completed}")
             self.debug_print_tokens(current_tokens)
@@ -605,32 +641,54 @@ class MLXAlignAtt:
             if completed:
                 current_tokens = current_tokens[:, :-1]
                 break
-            if not is_last and self.state.last_attend_frame - most_attended_frame > self.cfg.rewind_threshold:
+            if (
+                not is_last
+                and self.state.last_attend_frame - most_attended_frame
+                > self.cfg.rewind_threshold
+            ):
                 current_tokens_np = np.array(current_tokens)
                 if current_tokens.shape[1] > 1 and current_tokens_np[0, -2] >= DEC_PAD:
                     logger.debug("omit rewinding from special tokens")
                     self.state.last_attend_frame = most_attended_frame
                 else:
-                    logger.debug(f"[rewind detected] current: {most_attended_frame}, last: {self.state.last_attend_frame}")
+                    logger.debug(
+                        f"[rewind detected] current: {most_attended_frame}, last: {self.state.last_attend_frame}"
+                    )
                     self.state.last_attend_frame = -self.cfg.rewind_threshold
-                    current_tokens = mx.concatenate(self.state.tokens, axis=1) if len(self.state.tokens) > 0 else self.state.tokens[0]
+                    current_tokens = (
+                        mx.concatenate(self.state.tokens, axis=1)
+                        if len(self.state.tokens) > 0
+                        else self.state.tokens[0]
+                    )
                     break
             else:
                 self.state.last_attend_frame = most_attended_frame
-            if content_mel_len - most_attended_frame <= (4 if is_last else self.cfg.frame_threshold):
-                logger.debug(f"attention reaches the end: {most_attended_frame}/{content_mel_len}")
+            if content_mel_len - most_attended_frame <= (
+                4 if is_last else self.cfg.frame_threshold
+            ):
+                logger.debug(
+                    f"attention reaches the end: {most_attended_frame}/{content_mel_len}"
+                )
                 current_tokens = current_tokens[:, :-1]
                 break
-        tokens_to_split = np.array(current_tokens[0, token_len_before_decoding:]).tolist()
+        tokens_to_split = np.array(
+            current_tokens[0, token_len_before_decoding:]
+        ).tolist()
         if self.state.pending_incomplete_tokens:
-            logger.debug(f"[UTF-8 Fix] Prepending pending tokens: {self.state.pending_incomplete_tokens}")
+            logger.debug(
+                f"[UTF-8 Fix] Prepending pending tokens: {self.state.pending_incomplete_tokens}"
+            )
             tokens_to_split = self.state.pending_incomplete_tokens + tokens_to_split
 
         if fire_detected or is_last:
             new_hypothesis = tokens_to_split
-            split_words, split_tokens = self.tokenizer.split_to_word_tokens(new_hypothesis)
+            split_words, split_tokens = self.tokenizer.split_to_word_tokens(
+                new_hypothesis
+            )
         else:
-            split_words, split_tokens = self.tokenizer.split_to_word_tokens(tokens_to_split)
+            split_words, split_tokens = self.tokenizer.split_to_word_tokens(
+                tokens_to_split
+            )
             if len(split_words) > 1:
                 new_hypothesis = [i for sublist in split_tokens[:-1] for i in sublist]
             else:
@@ -650,7 +708,7 @@ class MLXAlignAtt:
         timestamped_words = []
         timestamp_idx = 0
         replacement_char = "\ufffd"
-        
+
         for word, word_tokens in zip(split_words, split_tokens):
             if replacement_char in word:
                 logger.warning(f"[UTF-8 Filter] Skipping: {repr(word)}")
@@ -661,6 +719,20 @@ class MLXAlignAtt:
                 current_timestamp = l_absolute_timestamps[timestamp_idx]
             except IndexError:
                 pass
+
+            # Calculate word confidence from token probabilities
+            word_confidence = None
+            if token_logprobs:
+                # Get probabilities for this word's tokens
+                word_probs = token_logprobs[
+                    timestamp_idx : timestamp_idx + len(word_tokens)
+                ]
+                if word_probs:
+                    # Geometric mean of probabilities (equivalent to average of log probs)
+                    word_confidence = float(
+                        np.exp(np.mean(np.log(np.array(word_probs) + 1e-10)))
+                    )
+
             timestamp_idx += len(word_tokens)
 
             timestamp_entry = ASRToken(
@@ -668,7 +740,8 @@ class MLXAlignAtt:
                 end=round(current_timestamp + 0.1, 2),
                 text=word,
                 speaker=self.state.speaker,
-                detected_language=self.state.detected_language
+                detected_language=self.state.detected_language,
+                confidence=word_confidence,
             ).with_offset(self.state.global_time_offset)
             timestamped_words.append(timestamp_entry)
         self.state.pending_incomplete_tokens = []
@@ -683,18 +756,16 @@ class MLXAlignAtt:
         return timestamped_words
 
     def _process_cross_attention(
-        self,
-        cross_attns: List[List[mx.array]],
-        content_mel_len: int
+        self, cross_attns: List[List[mx.array]], content_mel_len: int
     ) -> mx.array:
         """
         Process cross-attention weights for alignment.
-        
+
         Args:
             cross_attns: List of cross-attention from each forward pass
                         Each element is a list of mx.arrays per layer
             content_mel_len: Length of actual audio content
-            
+
         Returns:
             Processed attention tensor, shape (batch, seq_len, content_mel_len)
         """
@@ -702,17 +773,19 @@ class MLXAlignAtt:
         num_decoder_layers = self.num_decoder_layers
 
         if cross_attns and isinstance(cross_attns[0], list):
-            flattened_attns = [attn for layer_list in cross_attns for attn in layer_list]
+            flattened_attns = [
+                attn for layer_list in cross_attns for attn in layer_list
+            ]
         else:
             flattened_attns = cross_attns
 
         for idx, attn_mat in enumerate(flattened_attns):
             if attn_mat is None:
                 continue
-                
+
             layer_rank = idx % num_decoder_layers
             align_heads_in_layer = self.state.align_source.get(layer_rank, [])
-            
+
             if len(align_heads_in_layer) == 0:
                 continue
             attn_mat = mx.softmax(attn_mat, axis=-1)
@@ -749,4 +822,3 @@ class MLXAlignAtt:
 
         mx.eval(attn_of_alignment_heads)
         return attn_of_alignment_heads
-
