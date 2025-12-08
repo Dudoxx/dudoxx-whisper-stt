@@ -1,16 +1,21 @@
-# PyTorch 2.8+ compatibility: Add safe globals for model loading
-# Must be done before any pyannote/diart imports
+# PyTorch 2.8+ compatibility: Patch torch.load for pyannote/diart model loading
+# PyTorch 2.6+ changed default weights_only=True which breaks loading pyannote checkpoints
+# These are trusted HuggingFace models, so we allow unsafe loading
 import torch
-from torch import torch_version
 
-torch.serialization.add_safe_globals([torch_version.TorchVersion])
+_original_torch_load = torch.load
 
-try:
-    from pyannote.audio.core.task import Specifications, Problem, Resolution
 
-    torch.serialization.add_safe_globals([Specifications, Problem, Resolution])
-except ImportError:
-    pass  # pyannote.audio not installed
+def _patched_torch_load(*args, **kwargs):
+    """Patched torch.load that defaults to weights_only=False for pyannote compatibility."""
+    # Force weights_only=False if not explicitly set to True
+    # This handles both missing key and None value cases
+    if kwargs.get("weights_only") is None:
+        kwargs["weights_only"] = False
+    return _original_torch_load(*args, **kwargs)
+
+
+torch.load = _patched_torch_load
 
 from .audio_processor import AudioProcessor
 from .core import TranscriptionEngine
