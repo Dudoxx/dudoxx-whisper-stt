@@ -15,11 +15,13 @@
 2. [System Requirements](#system-requirements)
 3. [Installation](#installation)
 4. [Server Deployment](#server-deployment)
-5. [API Reference](#api-reference)
-6. [Frontend Integration](#frontend-integration)
-7. [Live Streaming Implementation](#live-streaming-implementation)
-8. [Production Configuration](#production-configuration)
-9. [Troubleshooting](#troubleshooting)
+5. [Enhanced Features](#enhanced-features)
+6. [API Reference](#api-reference)
+7. [Frontend Integration](#frontend-integration)
+8. [Live Streaming Implementation](#live-streaming-implementation)
+9. [Apache2 Configuration](#apache2-configuration)
+10. [Production Configuration](#production-configuration)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -229,6 +231,84 @@ services:
 
 ```bash
 docker-compose -f docker-compose.voxtral.yml up -d
+```
+
+---
+
+## Enhanced Features
+
+The Voxtral streaming server includes several enhanced features for production use:
+
+### Named Entity Recognition (NER)
+
+Using GLiNER (urchade/gliner_multi-v2.1), the server automatically detects:
+
+- **Person Names**: Multilingual name detection (Arabic, German, French, English)
+- **Locations**: Countries, cities, geographic locations
+- **Organizations**: Companies, institutions
+- **Dates/Times**: Various date formats
+- **Numbers**: Phone numbers, amounts, percentages
+
+Entities are returned in the WebSocket response:
+
+```json
+{
+  "type": "partial",
+  "text": "Dr. Schmidt from Berlin called about the meeting.",
+  "entities": [
+    {"text": "Dr. Schmidt", "label": "PERSON", "confidence": 0.89},
+    {"text": "Berlin", "label": "LOCATION", "confidence": 0.94}
+  ]
+}
+```
+
+### Speaker Diarization
+
+Using Pyannote Audio 3.1, the server identifies different speakers:
+
+- **Speaker Tracking**: Automatically labels speakers (Speaker 1, Speaker 2, etc.)
+- **Exclusive Mode**: Non-overlapping speaker segments for cleaner transcripts
+- **Configurable Limits**: min_speakers and max_speakers parameters
+
+Enable diarization by setting `HF_TOKEN` in your environment (requires HuggingFace access to pyannote models).
+
+### Voice Activity Detection (VAD)
+
+Using Silero VAD (ONNX), the server detects speech regions:
+
+- **Neural VAD**: More accurate than energy-based detection
+- **Speech Ratio**: Calculated for each audio chunk
+- **ONNX Backend**: Efficient CPU/GPU inference
+
+### Text Processing
+
+Additional text processing features:
+
+- **Punctuation Restoration**: Using fullstop-punctuation-multilang-large model
+- **Semantic Paragraph Detection**: Topic-based paragraph breaks
+- **Question Detection**: Identifies question patterns
+
+### GPU Memory Requirements
+
+With all enhanced features enabled:
+
+| Feature | GPU Memory |
+|---------|-----------|
+| Voxtral Mini 3B (vLLM) | ~14GB (60%) |
+| GLiNER NER | ~750MB |
+| Pyannote Diarization | ~1.2GB |
+| Punctuation Model | ~1.5GB |
+| Sentence Embeddings | ~500MB |
+| **Total** | ~18GB |
+
+For GPUs with less memory, you can disable features in the streaming server:
+
+```python
+processor = VoxtralStreamingProcessor(
+    enable_punctuation=True,  # Disable if memory limited
+    enable_ner=True,          # ~750MB
+    enable_diarization=False, # ~1.2GB (disable to save memory)
+)
 ```
 
 ---
@@ -1053,6 +1133,68 @@ export function VoxtralStreamingTranscriber({
   );
 }
 ```
+
+---
+
+## Apache2 Configuration
+
+Apache2 configuration files are provided in the `apache2/` directory for easy deployment.
+
+### Installation
+
+1. Copy the config files:
+   ```bash
+   sudo cp apache2/voxtral.example.com*.conf /etc/apache2/sites-available/
+   ```
+
+2. Replace the example domain with your actual domain:
+   ```bash
+   sudo sed -i 's/voxtral.example.com/stt.yourdomain.com/g' /etc/apache2/sites-available/voxtral.*.conf
+   ```
+
+3. Enable required Apache modules:
+   ```bash
+   sudo a2enmod ssl proxy proxy_http proxy_wstunnel rewrite headers
+   ```
+
+4. Obtain SSL certificate with Let's Encrypt:
+   ```bash
+   sudo certbot certonly --apache -d stt.yourdomain.com
+   ```
+
+5. Enable the sites and reload Apache:
+   ```bash
+   sudo a2ensite voxtral.stt.yourdomain.com.conf
+   sudo a2ensite voxtral.stt.yourdomain.com-ssl.conf
+   sudo systemctl reload apache2
+   ```
+
+### WebSocket Proxy Configuration
+
+The SSL config includes WebSocket support for real-time streaming:
+
+```apache
+# WebSocket upgrade handling
+RewriteEngine On
+RewriteCond %{HTTP:Upgrade} =websocket [NC]
+RewriteRule ^/(.*) ws://localhost:4302/$1 [P,L]
+
+# WebSocket proxy for ASR endpoint
+ProxyPass /asr ws://localhost:4302/asr
+ProxyPassReverse /asr ws://localhost:4302/asr
+
+# HTTP proxy for other requests
+ProxyPass / http://localhost:4302/
+ProxyPassReverse / http://localhost:4302/
+```
+
+### Security Headers
+
+The configuration includes standard security headers:
+- HSTS (HTTP Strict Transport Security)
+- X-Content-Type-Options
+- X-Frame-Options
+- Referrer-Policy
 
 ---
 
