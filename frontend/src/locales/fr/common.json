@@ -1,0 +1,130 @@
+{
+  "app": {
+    "name": "Dudoxx Transcriber",
+    "description": "Transcription vocale en temps réel avec diarisation des locuteurs"
+  },
+  "nav": {
+    "home": "Accueil",
+    "recordings": "Enregistrements",
+    "transcriptions": "Transcriptions",
+    "settings": "Paramètres",
+    "newRecording": "Nouvel enregistrement"
+  },
+  "recording": {
+    "title": "Enregistrement en direct",
+    "start": "Démarrer l'enregistrement",
+    "stop": "Arrêter l'enregistrement",
+    "pause": "Pause",
+    "resume": "Reprendre",
+    "status": {
+      "idle": "Prêt à enregistrer",
+      "recording": "Enregistrement...",
+      "paused": "En pause",
+      "processing": "Traitement...",
+      "connecting": "Connexion...",
+      "connected": "Connecté",
+      "disconnected": "Déconnecté",
+      "error": "Erreur de connexion"
+    },
+    "duration": "Durée",
+    "language": "Langue",
+    "autoDetect": "Détection automatique",
+    "microphone": "Microphone",
+    "selectMicrophone": "Sélectionner le microphone",
+    "defaultMicrophone": "Microphone par défaut"
+  },
+  "transcription": {
+    "title": "Transcription",
+    "noTranscription": "Pas encore de transcription",
+    "speaker": "Locuteur",
+    "confidence": "Confiance",
+    "timestamp": "Horodatage",
+    "words": "mots",
+    "sentences": "phrases",
+    "export": "Exporter",
+    "copy": "Copier",
+    "copied": "Copié !",
+    "delete": "Supprimer",
+    "confirmDelete": "Êtes-vous sûr de vouloir supprimer cette transcription ?",
+    "emptyState": {
+      "title": "Aucune transcription",
+      "description": "Démarrez un nouvel enregistrement pour créer votre première transcription"
+    }
+  },
+  "playback": {
+    "title": "Lecture",
+    "play": "Lire",
+    "pause": "Pause",
+    "speed": "Vitesse",
+    "volume": "Volume",
+    "seekTo": "Aller à",
+    "currentTime": "Temps actuel",
+    "totalDuration": "Durée totale"
+  },
+  "settings": {
+    "title": "Paramètres",
+    "general": "Général",
+    "audio": "Audio",
+    "appearance": "Apparence",
+    "language": "Langue",
+    "theme": "Thème",
+    "themes": {
+      "light": "Clair",
+      "dark": "Sombre",
+      "system": "Système"
+    },
+    "server": {
+      "title": "Configuration du serveur",
+      "url": "URL du serveur",
+      "status": "Statut",
+      "connected": "Connecté",
+      "disconnected": "Déconnecté",
+      "testConnection": "Tester la connexion"
+    },
+    "storage": {
+      "title": "Stockage",
+      "used": "Utilisé",
+      "available": "Disponible",
+      "clearAll": "Effacer toutes les données",
+      "confirmClear": "Êtes-vous sûr de vouloir supprimer tous les enregistrements et transcriptions ?"
+    },
+    "saved": "Paramètres enregistrés"
+  },
+  "export": {
+    "title": "Exporter",
+    "format": "Format",
+    "formats": {
+      "txt": "Texte brut (.txt)",
+      "json": "JSON (.json)",
+      "srt": "Sous-titres (.srt)",
+      "vtt": "WebVTT (.vtt)"
+    },
+    "includeTimestamps": "Inclure les horodatages",
+    "includeSpeakers": "Inclure les noms des locuteurs",
+    "download": "Télécharger"
+  },
+  "common": {
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "close": "Fermer",
+    "loading": "Chargement...",
+    "error": "Erreur",
+    "success": "Succès",
+    "confirm": "Confirmer",
+    "back": "Retour",
+    "next": "Suivant",
+    "previous": "Précédent",
+    "search": "Rechercher",
+    "noResults": "Aucun résultat trouvé",
+    "retry": "Réessayer"
+  },
+  "errors": {
+    "microphoneAccess": "Accès au microphone refusé. Veuillez autoriser l'accès au microphone pour enregistrer.",
+    "connectionFailed": "Échec de la connexion au serveur",
+    "recordingFailed": "Échec de l'enregistrement",
+    "exportFailed": "Échec de l'exportation",
+    "storageFull": "Stockage plein. Veuillez supprimer certains enregistrements."
+  }
+}

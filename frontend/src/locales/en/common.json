@@ -1,0 +1,130 @@
+{
+  "app": {
+    "name": "Dudoxx Transcriber",
+    "description": "Real-time speech-to-text transcription with speaker diarization"
+  },
+  "nav": {
+    "home": "Home",
+    "recordings": "Recordings",
+    "transcriptions": "Transcriptions",
+    "settings": "Settings",
+    "newRecording": "New Recording"
+  },
+  "recording": {
+    "title": "Live Recording",
+    "start": "Start Recording",
+    "stop": "Stop Recording",
+    "pause": "Pause",
+    "resume": "Resume",
+    "status": {
+      "idle": "Ready to record",
+      "recording": "Recording...",
+      "paused": "Paused",
+      "processing": "Processing...",
+      "connecting": "Connecting...",
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "error": "Connection error"
+    },
+    "duration": "Duration",
+    "language": "Language",
+    "autoDetect": "Auto Detect",
+    "microphone": "Microphone",
+    "selectMicrophone": "Select microphone",
+    "defaultMicrophone": "Default Microphone"
+  },
+  "transcription": {
+    "title": "Transcription",
+    "noTranscription": "No transcription yet",
+    "speaker": "Speaker",
+    "confidence": "Confidence",
+    "timestamp": "Timestamp",
+    "words": "words",
+    "sentences": "sentences",
+    "export": "Export",
+    "copy": "Copy",
+    "copied": "Copied!",
+    "delete": "Delete",
+    "confirmDelete": "Are you sure you want to delete this transcription?",
+    "emptyState": {
+      "title": "No transcriptions yet",
+      "description": "Start a new recording to create your first transcription"
+    }
+  },
+  "playback": {
+    "title": "Playback",
+    "play": "Play",
+    "pause": "Pause",
+    "speed": "Speed",
+    "volume": "Volume",
+    "seekTo": "Seek to",
+    "currentTime": "Current time",
+    "totalDuration": "Total duration"
+  },
+  "settings": {
+    "title": "Settings",
+    "general": "General",
+    "audio": "Audio",
+    "appearance": "Appearance",
+    "language": "Language",
+    "theme": "Theme",
+    "themes": {
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System"
+    },
+    "server": {
+      "title": "Server Configuration",
+      "url": "Server URL",
+      "status": "Status",
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "testConnection": "Test Connection"
+    },
+    "storage": {
+      "title": "Storage",
+      "used": "Used",
+      "available": "Available",
+      "clearAll": "Clear All Data",
+      "confirmClear": "Are you sure you want to delete all recordings and transcriptions?"
+    },
+    "saved": "Settings saved"
+  },
+  "export": {
+    "title": "Export",
+    "format": "Format",
+    "formats": {
+      "txt": "Plain Text (.txt)",
+      "json": "JSON (.json)",
+      "srt": "Subtitles (.srt)",
+      "vtt": "WebVTT (.vtt)"
+    },
+    "includeTimestamps": "Include timestamps",
+    "includeSpeakers": "Include speaker labels",
+    "download": "Download"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "previous": "Previous",
+    "search": "Search",
+    "noResults": "No results found",
+    "retry": "Retry"
+  },
+  "errors": {
+    "microphoneAccess": "Microphone access denied. Please allow microphone access to record.",
+    "connectionFailed": "Failed to connect to server",
+    "recordingFailed": "Recording failed",
+    "exportFailed": "Export failed",
+    "storageFull": "Storage is full. Please delete some recordings."
+  }
+}

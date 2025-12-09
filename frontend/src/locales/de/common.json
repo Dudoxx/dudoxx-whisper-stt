@@ -1,0 +1,130 @@
+{
+  "app": {
+    "name": "Dudoxx Transcriber",
+    "description": "Echtzeit-Spracherkennung mit Sprecherdiarisierung"
+  },
+  "nav": {
+    "home": "Startseite",
+    "recordings": "Aufnahmen",
+    "transcriptions": "Transkriptionen",
+    "settings": "Einstellungen",
+    "newRecording": "Neue Aufnahme"
+  },
+  "recording": {
+    "title": "Live-Aufnahme",
+    "start": "Aufnahme starten",
+    "stop": "Aufnahme stoppen",
+    "pause": "Pause",
+    "resume": "Fortsetzen",
+    "status": {
+      "idle": "Bereit zur Aufnahme",
+      "recording": "Aufnahme läuft...",
+      "paused": "Pausiert",
+      "processing": "Verarbeitung...",
+      "connecting": "Verbindung wird hergestellt...",
+      "connected": "Verbunden",
+      "disconnected": "Getrennt",
+      "error": "Verbindungsfehler"
+    },
+    "duration": "Dauer",
+    "language": "Sprache",
+    "autoDetect": "Automatische Erkennung",
+    "microphone": "Mikrofon",
+    "selectMicrophone": "Mikrofon auswählen",
+    "defaultMicrophone": "Standardmikrofon"
+  },
+  "transcription": {
+    "title": "Transkription",
+    "noTranscription": "Noch keine Transkription",
+    "speaker": "Sprecher",
+    "confidence": "Konfidenz",
+    "timestamp": "Zeitstempel",
+    "words": "Wörter",
+    "sentences": "Sätze",
+    "export": "Exportieren",
+    "copy": "Kopieren",
+    "copied": "Kopiert!",
+    "delete": "Löschen",
+    "confirmDelete": "Sind Sie sicher, dass Sie diese Transkription löschen möchten?",
+    "emptyState": {
+      "title": "Keine Transkriptionen",
+      "description": "Starten Sie eine neue Aufnahme, um Ihre erste Transkription zu erstellen"
+    }
+  },
+  "playback": {
+    "title": "Wiedergabe",
+    "play": "Abspielen",
+    "pause": "Pause",
+    "speed": "Geschwindigkeit",
+    "volume": "Lautstärke",
+    "seekTo": "Springe zu",
+    "currentTime": "Aktuelle Zeit",
+    "totalDuration": "Gesamtdauer"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "general": "Allgemein",
+    "audio": "Audio",
+    "appearance": "Erscheinungsbild",
+    "language": "Sprache",
+    "theme": "Design",
+    "themes": {
+      "light": "Hell",
+      "dark": "Dunkel",
+      "system": "System"
+    },
+    "server": {
+      "title": "Serverkonfiguration",
+      "url": "Server-URL",
+      "status": "Status",
+      "connected": "Verbunden",
+      "disconnected": "Getrennt",
+      "testConnection": "Verbindung testen"
+    },
+    "storage": {
+      "title": "Speicher",
+      "used": "Verwendet",
+      "available": "Verfügbar",
+      "clearAll": "Alle Daten löschen",
+      "confirmClear": "Sind Sie sicher, dass Sie alle Aufnahmen und Transkriptionen löschen möchten?"
+    },
+    "saved": "Einstellungen gespeichert"
+  },
+  "export": {
+    "title": "Exportieren",
+    "format": "Format",
+    "formats": {
+      "txt": "Klartext (.txt)",
+      "json": "JSON (.json)",
+      "srt": "Untertitel (.srt)",
+      "vtt": "WebVTT (.vtt)"
+    },
+    "includeTimestamps": "Zeitstempel einbeziehen",
+    "includeSpeakers": "Sprechernamen einbeziehen",
+    "download": "Herunterladen"
+  },
+  "common": {
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "delete": "Löschen",
+    "edit": "Bearbeiten",
+    "close": "Schließen",
+    "loading": "Laden...",
+    "error": "Fehler",
+    "success": "Erfolg",
+    "confirm": "Bestätigen",
+    "back": "Zurück",
+    "next": "Weiter",
+    "previous": "Zurück",
+    "search": "Suchen",
+    "noResults": "Keine Ergebnisse gefunden",
+    "retry": "Erneut versuchen"
+  },
+  "errors": {
+    "microphoneAccess": "Mikrofonzugriff verweigert. Bitte erlauben Sie den Mikrofonzugriff für die Aufnahme.",
+    "connectionFailed": "Verbindung zum Server fehlgeschlagen",
+    "recordingFailed": "Aufnahme fehlgeschlagen",
+    "exportFailed": "Export fehlgeschlagen",
+    "storageFull": "Speicher voll. Bitte löschen Sie einige Aufnahmen."
+  }
+}

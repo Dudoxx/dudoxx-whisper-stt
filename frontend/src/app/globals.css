@@ -1,0 +1,237 @@
+@import "tailwindcss";
+
+@theme {
+  /* OKLCH Color System - STT Theme */
+  
+  /* Light mode colors */
+  --color-background: oklch(0.99 0 0);
+  --color-foreground: oklch(0.15 0.02 260);
+  
+  --color-card: oklch(0.98 0 0);
+  --color-card-foreground: oklch(0.15 0.02 260);
+  
+  --color-popover: oklch(0.99 0 0);
+  --color-popover-foreground: oklch(0.15 0.02 260);
+  
+  --color-primary: oklch(0.55 0.22 260);
+  --color-primary-foreground: oklch(0.99 0 0);
+  
+  --color-secondary: oklch(0.94 0.02 260);
+  --color-secondary-foreground: oklch(0.25 0.02 260);
+  
+  --color-muted: oklch(0.94 0.01 260);
+  --color-muted-foreground: oklch(0.5 0.02 260);
+  
+  --color-accent: oklch(0.94 0.02 260);
+  --color-accent-foreground: oklch(0.25 0.02 260);
+  
+  --color-destructive: oklch(0.55 0.22 25);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  
+  --color-success: oklch(0.6 0.18 145);
+  --color-success-foreground: oklch(0.99 0 0);
+  
+  --color-warning: oklch(0.75 0.15 85);
+  --color-warning-foreground: oklch(0.2 0.02 85);
+  
+  --color-border: oklch(0.88 0.01 260);
+  --color-input: oklch(0.88 0.01 260);
+  --color-ring: oklch(0.55 0.22 260);
+  
+  /* Recording-specific colors */
+  --color-recording: oklch(0.6 0.25 25);
+  --color-recording-foreground: oklch(0.99 0 0);
+  --color-recording-pulse: oklch(0.6 0.25 25 / 0.5);
+  
+  --color-connected: oklch(0.6 0.18 145);
+  --color-disconnected: oklch(0.5 0.02 260);
+  
+  /* Speaker colors for diarization */
+  --color-speaker-1: oklch(0.65 0.2 260);
+  --color-speaker-2: oklch(0.65 0.2 145);
+  --color-speaker-3: oklch(0.65 0.2 45);
+  --color-speaker-4: oklch(0.65 0.2 320);
+  --color-speaker-5: oklch(0.65 0.2 200);
+  
+  /* Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  --radius-full: 9999px;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 oklch(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px oklch(0 0 0 / 0.1), 0 2px 4px -2px oklch(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px oklch(0 0 0 / 0.1), 0 4px 6px -4px oklch(0 0 0 / 0.1);
+  
+  /* Animation durations */
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+}
+
+/* Dark mode overrides */
+.dark {
+  --color-background: oklch(0.15 0.02 260);
+  --color-foreground: oklch(0.95 0 0);
+  
+  --color-card: oklch(0.18 0.02 260);
+  --color-card-foreground: oklch(0.95 0 0);
+  
+  --color-popover: oklch(0.18 0.02 260);
+  --color-popover-foreground: oklch(0.95 0 0);
+  
+  --color-primary: oklch(0.7 0.18 260);
+  --color-primary-foreground: oklch(0.15 0.02 260);
+  
+  --color-secondary: oklch(0.25 0.02 260);
+  --color-secondary-foreground: oklch(0.95 0 0);
+  
+  --color-muted: oklch(0.25 0.02 260);
+  --color-muted-foreground: oklch(0.65 0.02 260);
+  
+  --color-accent: oklch(0.25 0.02 260);
+  --color-accent-foreground: oklch(0.95 0 0);
+  
+  --color-destructive: oklch(0.55 0.22 25);
+  --color-destructive-foreground: oklch(0.99 0 0);
+  
+  --color-success: oklch(0.6 0.18 145);
+  --color-success-foreground: oklch(0.99 0 0);
+  
+  --color-warning: oklch(0.75 0.15 85);
+  --color-warning-foreground: oklch(0.2 0.02 85);
+  
+  --color-border: oklch(0.3 0.02 260);
+  --color-input: oklch(0.3 0.02 260);
+  --color-ring: oklch(0.7 0.18 260);
+  
+  --color-recording: oklch(0.65 0.25 25);
+  --color-recording-pulse: oklch(0.65 0.25 25 / 0.5);
+  
+  --color-connected: oklch(0.65 0.18 145);
+  --color-disconnected: oklch(0.5 0.02 260);
+  
+  /* Darker speaker colors for dark mode */
+  --color-speaker-1: oklch(0.7 0.18 260);
+  --color-speaker-2: oklch(0.7 0.18 145);
+  --color-speaker-3: oklch(0.7 0.18 45);
+  --color-speaker-4: oklch(0.7 0.18 320);
+  --color-speaker-5: oklch(0.7 0.18 200);
+}
+
+/* Base styles */
+* {
+  border-color: var(--color-border);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+/* Custom utilities */
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  /* Recording pulse animation */
+  .animate-recording-pulse {
+    animation: recording-pulse 1.5s ease-in-out infinite;
+  }
+  
+  @keyframes recording-pulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.5;
+      transform: scale(1.05);
+    }
+  }
+  
+  /* Audio waveform animation */
+  .animate-waveform {
+    animation: waveform 0.5s ease-in-out infinite alternate;
+  }
+  
+  @keyframes waveform {
+    0% {
+      transform: scaleY(0.3);
+    }
+    100% {
+      transform: scaleY(1);
+    }
+  }
+  
+  /* Skeleton loading */
+  .animate-skeleton {
+    animation: skeleton 1.5s ease-in-out infinite;
+    background: linear-gradient(
+      90deg,
+      var(--color-muted) 0%,
+      var(--color-muted-foreground) 50%,
+      var(--color-muted) 100%
+    );
+    background-size: 200% 100%;
+  }
+  
+  @keyframes skeleton {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+  
+  /* Speaker color utilities */
+  .speaker-1 { color: var(--color-speaker-1); }
+  .speaker-2 { color: var(--color-speaker-2); }
+  .speaker-3 { color: var(--color-speaker-3); }
+  .speaker-4 { color: var(--color-speaker-4); }
+  .speaker-5 { color: var(--color-speaker-5); }
+  
+  .bg-speaker-1 { background-color: var(--color-speaker-1); }
+  .bg-speaker-2 { background-color: var(--color-speaker-2); }
+  .bg-speaker-3 { background-color: var(--color-speaker-3); }
+  .bg-speaker-4 { background-color: var(--color-speaker-4); }
+  .bg-speaker-5 { background-color: var(--color-speaker-5); }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-muted);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-muted-foreground);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-foreground);
+}
+
+/* Focus visible styles */
+:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* Selection styles */
+::selection {
+  background-color: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
