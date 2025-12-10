@@ -1,0 +1,19 @@
+[Unit]
+Description=Faster-Whisper Streaming ASR Server
+After=network.target
+
+[Service]
+Type=simple
+User=optron
+Group=optron
+WorkingDirectory=/opt/faster-whisper
+EnvironmentFile=/opt/faster-whisper/.env
+Environment="CUDA_VISIBLE_DEVICES=0"
+
+ExecStart=/opt/faster-whisper/venv/bin/python /opt/faster-whisper/streaming_server.py --port 4400
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

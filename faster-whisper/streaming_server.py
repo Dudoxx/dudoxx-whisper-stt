@@ -1,0 +1,1103 @@
+#!/usr/bin/env python3
+"""
+Faster-Whisper Streaming ASR Server
+
+A WebSocket-based streaming server for faster-whisper with:
+- Silero VAD for voice activity detection
+- Pyannote for speaker diarization
+- Built-in punctuation and capitalization
+- Multi-language support (EN, FR, DE + 96 more)
+
+GPU Memory: ~4-5GB total (vs 18GB for Voxtral)
+License: MIT (commercial use allowed)
+"""
+
+import asyncio
+import logging
+import os
+import struct
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Optional
+
+import numpy as np
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="Faster-Whisper Streaming ASR",
+    description="Multilingual streaming transcription (EN/FR/DE) with VAD and diarization",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Model Configuration
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
+WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")  # int8 for lower memory
+
+# Audio Configuration
+SAMPLE_RATE = 16000
+BYTES_PER_SAMPLE = 2
+CHUNK_DURATION_SECONDS = 2.0  # Process every 2 seconds
+CHUNK_SIZE_BYTES = int(CHUNK_DURATION_SECONDS * SAMPLE_RATE * BYTES_PER_SAMPLE)
+
+# VAD Configuration
+VAD_THRESHOLD = 0.5
+MIN_SPEECH_DURATION = 0.3
+SILENCE_DURATION_THRESHOLD = 1.0
+
+# Diarization Configuration
+ENABLE_DIARIZATION = os.environ.get("ENABLE_DIARIZATION", "true").lower() == "true"
+HF_TOKEN = os.environ.get("HF_TOKEN")
+MIN_SPEAKERS = 1
+MAX_SPEAKERS = 6
+
+# Concurrency
+MAX_CONCURRENT_REQUESTS = 8
+
+# Request semaphore
+request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+# Supported languages
+SUPPORTED_LANGUAGES = {
+    "auto": "Auto-detect",
+    "en": "English",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "ar": "Arabic",
+}
+
+# =============================================================================
+# Global Model Instances (lazy-loaded)
+# =============================================================================
+
+_whisper_model = None
+_vad_model = None
+_diarization_pipeline = None
+
+
+def get_whisper_model():
+    """Lazy-load faster-whisper model."""
+    global _whisper_model
+    if _whisper_model is None:
+        try:
+            from faster_whisper import WhisperModel
+            logger.info(f"Loading faster-whisper model: {WHISPER_MODEL} ({WHISPER_COMPUTE_TYPE})")
+            _whisper_model = WhisperModel(
+                WHISPER_MODEL,
+                device=WHISPER_DEVICE,
+                compute_type=WHISPER_COMPUTE_TYPE,
+            )
+            logger.info(f"faster-whisper model loaded on {WHISPER_DEVICE}")
+        except Exception as e:
+            logger.error(f"Failed to load faster-whisper: {e}")
+            _whisper_model = False
+    return _whisper_model if _whisper_model else None
+
+
+def get_vad_model():
+    """Lazy-load Silero VAD model."""
+    global _vad_model
+    if _vad_model is None:
+        try:
+            from silero_vad import load_silero_vad
+            _vad_model = load_silero_vad(onnx=True)
+            logger.info("Silero VAD model loaded (ONNX)")
+        except Exception as e:
+            logger.warning(f"Failed to load Silero VAD: {e}")
+            _vad_model = False
+    return _vad_model if _vad_model else None
+
+
+def get_diarization_pipeline():
+    """Lazy-load pyannote diarization pipeline."""
+    global _diarization_pipeline
+    if _diarization_pipeline is None and ENABLE_DIARIZATION and HF_TOKEN:
+        try:
+            from pyannote.audio import Pipeline
+            import torch
+
+            _diarization_pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                token=HF_TOKEN,
+            )
+            if torch.cuda.is_available():
+                _diarization_pipeline.to(torch.device("cuda"))
+            logger.info("Pyannote diarization pipeline loaded")
+        except Exception as e:
+            logger.warning(f"Failed to load diarization: {e}")
+            _diarization_pipeline = False
+    return _diarization_pipeline if _diarization_pipeline else None
+
+
+# =============================================================================
+# Preload Models at Startup
+# =============================================================================
+
+@app.on_event("startup")
+async def startup():
+    """Preload models at startup."""
+    logger.info("Preloading models...")
+
+    # Load Whisper
+    model = get_whisper_model()
+    if model:
+        logger.info("faster-whisper ready")
+
+    # Load VAD
+    vad = get_vad_model()
+    if vad:
+        logger.info("Silero VAD ready")
+
+    # Load diarization
+    if ENABLE_DIARIZATION and HF_TOKEN:
+        diarize = get_diarization_pipeline()
+        if diarize:
+            logger.info("Pyannote diarization ready")
+    elif ENABLE_DIARIZATION:
+        logger.warning("Diarization enabled but HF_TOKEN not set")
+
+    logger.info("All models loaded")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Cleanup on shutdown."""
+    logger.info("Shutting down...")
+
+
+# =============================================================================
+# VAD Helper
+# =============================================================================
+
+@dataclass
+class VADSegment:
+    """Voice activity segment."""
+    start: float
+    end: float
+
+
+class SileroVADProcessor:
+    """Process audio with Silero VAD."""
+
+    def __init__(self, sample_rate: int = 16000, threshold: float = 0.5):
+        self.sample_rate = sample_rate
+        self.threshold = threshold
+        self.model = get_vad_model()
+
+    def detect(self, audio: np.ndarray) -> tuple[list[VADSegment], float]:
+        """
+        Detect speech segments.
+
+        Returns:
+            (segments, speech_ratio)
+        """
+        if self.model is None:
+            return [], 1.0
+
+        try:
+            import torch
+            from silero_vad import get_speech_timestamps
+
+            # Ensure float32 normalized
+            if audio.dtype == np.int16:
+                audio = audio.astype(np.float32) / 32768.0
+            elif audio.dtype != np.float32:
+                audio = audio.astype(np.float32)
+
+            audio_tensor = torch.from_numpy(audio)
+
+            timestamps = get_speech_timestamps(
+                audio_tensor,
+                self.model,
+                sampling_rate=self.sample_rate,
+                threshold=self.threshold,
+                min_speech_duration_ms=250,
+                min_silence_duration_ms=100,
+            )
+
+            segments = []
+            for ts in timestamps:
+                segments.append(VADSegment(
+                    start=ts["start"] / self.sample_rate,
+                    end=ts["end"] / self.sample_rate,
+                ))
+
+            # Calculate speech ratio
+            total_speech = sum(s.end - s.start for s in segments)
+            total_duration = len(audio) / self.sample_rate
+            speech_ratio = total_speech / total_duration if total_duration > 0 else 0
+
+            return segments, speech_ratio
+
+        except Exception as e:
+            logger.error(f"VAD error: {e}")
+            return [], 1.0
+
+    def is_speech(self, audio: np.ndarray, min_ratio: float = 0.3) -> bool:
+        """Check if audio contains sufficient speech."""
+        _, ratio = self.detect(audio)
+        return ratio >= min_ratio
+
+
+# =============================================================================
+# Speaker Diarization Helper
+# =============================================================================
+
+@dataclass
+class SpeakerSegment:
+    """Speaker segment."""
+    speaker: str
+    start: float
+    end: float
+
+
+class DiarizationProcessor:
+    """Process audio with pyannote diarization."""
+
+    def __init__(self):
+        self.pipeline = get_diarization_pipeline()
+        self.speakers: dict[str, str] = {}  # raw_id -> label
+        self.speaker_count = 0
+
+    def diarize(self, audio: np.ndarray, sample_rate: int = 16000) -> list[SpeakerSegment]:
+        """Perform speaker diarization."""
+        if self.pipeline is None:
+            return []
+
+        try:
+            import torch
+
+            # Prepare audio
+            if audio.dtype == np.int16:
+                audio = audio.astype(np.float32) / 32768.0
+
+            waveform = torch.from_numpy(audio).unsqueeze(0)
+            audio_dict = {"waveform": waveform, "sample_rate": sample_rate}
+
+            # Run diarization
+            result = self.pipeline(
+                audio_dict,
+                min_speakers=MIN_SPEAKERS,
+                max_speakers=MAX_SPEAKERS,
+            )
+
+            segments = []
+            for turn, _, speaker in result.itertracks(yield_label=True):
+                # Track speaker labels
+                if speaker not in self.speakers:
+                    self.speaker_count += 1
+                    self.speakers[speaker] = f"Speaker {self.speaker_count}"
+
+                segments.append(SpeakerSegment(
+                    speaker=self.speakers[speaker],
+                    start=round(turn.start, 3),
+                    end=round(turn.end, 3),
+                ))
+
+            return segments
+
+        except Exception as e:
+            logger.error(f"Diarization error: {e}")
+            return []
+
+    def get_current_speaker(self, segments: list[SpeakerSegment]) -> Optional[str]:
+        """Get the current (last) speaker."""
+        return segments[-1].speaker if segments else None
+
+    def get_speakers_list(self) -> list[dict]:
+        """Get list of all detected speakers."""
+        return [{"id": k, "label": v} for k, v in self.speakers.items()]
+
+    def reset(self):
+        """Reset for new session."""
+        self.speakers.clear()
+        self.speaker_count = 0
+
+
+# =============================================================================
+# Streaming Processor
+# =============================================================================
+
+@dataclass
+class TranscriptionResult:
+    """Result from transcription."""
+    text: str
+    language: str
+    language_probability: float
+    segments: list[dict] = field(default_factory=list)
+    words: list[dict] = field(default_factory=list)
+
+
+class FasterWhisperStreamingProcessor:
+    """Handles chunked audio processing with VAD for streaming transcription."""
+
+    def __init__(self, language: str = "auto"):
+        self.language = language if language != "auto" else None
+        self.audio_buffer = bytearray()
+        self.full_transcript: list[str] = []
+        self.last_speech_time = time.time()
+        self.speech_detected = False
+
+        # Models
+        self.whisper = get_whisper_model()
+        self.vad = SileroVADProcessor()
+        self.diarizer = DiarizationProcessor() if ENABLE_DIARIZATION else None
+
+        # Statistics
+        self.start_time = time.time()
+        self.total_audio_duration = 0.0
+        self.total_processing_time = 0.0
+        self.chunk_count = 0
+        self.word_count = 0
+        self.detected_language = "unknown"
+
+        # Timestamp tracking
+        self.current_audio_position = 0.0
+
+    async def process_chunk(self, audio_data: bytes) -> Optional[dict]:
+        """Process an audio chunk and return transcription result."""
+        self.audio_buffer.extend(audio_data)
+
+        # Check buffer size
+        buffer_duration = len(self.audio_buffer) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+
+        # Convert to numpy for VAD check
+        if len(self.audio_buffer) >= SAMPLE_RATE * BYTES_PER_SAMPLE * 0.5:  # At least 0.5s
+            audio_np = np.frombuffer(bytes(self.audio_buffer[-SAMPLE_RATE * BYTES_PER_SAMPLE:]), dtype=np.int16)
+            is_speech = self.vad.is_speech(audio_np, min_ratio=0.2)
+
+            if is_speech:
+                self.speech_detected = True
+                self.last_speech_time = time.time()
+
+        # Check if we should process
+        silence_duration = time.time() - self.last_speech_time
+        should_process = False
+        is_final = False
+
+        if len(self.audio_buffer) >= CHUNK_SIZE_BYTES and self.speech_detected:
+            should_process = True
+        elif silence_duration > SILENCE_DURATION_THRESHOLD and self.speech_detected and buffer_duration > MIN_SPEECH_DURATION:
+            should_process = True
+            is_final = True
+            self.speech_detected = False
+
+        if not should_process:
+            return None
+
+        # Extract chunk
+        if is_final:
+            chunk = bytes(self.audio_buffer)
+            self.audio_buffer.clear()
+        else:
+            chunk = bytes(self.audio_buffer[:CHUNK_SIZE_BYTES])
+            self.audio_buffer = self.audio_buffer[CHUNK_SIZE_BYTES:]
+
+        # Process chunk
+        return await self._transcribe_chunk(chunk, is_final)
+
+    async def _transcribe_chunk(self, chunk: bytes, is_final: bool) -> Optional[dict]:
+        """Transcribe a single chunk."""
+        if self.whisper is None:
+            return None
+
+        chunk_duration = len(chunk) / (SAMPLE_RATE * BYTES_PER_SAMPLE)
+        self.total_audio_duration += chunk_duration
+        self.chunk_count += 1
+
+        # Convert to numpy float32
+        audio_np = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+
+        # VAD analysis
+        vad_segments, speech_ratio = self.vad.detect(audio_np)
+
+        # Skip if no speech
+        if speech_ratio < 0.2:
+            return None
+
+        # Transcribe
+        proc_start = time.time()
+
+        try:
+            segments, info = self.whisper.transcribe(
+                audio_np,
+                language=self.language,
+                beam_size=5,
+                word_timestamps=True,
+                vad_filter=True,
+                vad_parameters=dict(
+                    min_silence_duration_ms=500,
+                    speech_pad_ms=200,
+                ),
+            )
+
+            # Collect results
+            text_parts = []
+            word_list = []
+            segment_list = []
+
+            for segment in segments:
+                text_parts.append(segment.text.strip())
+
+                segment_list.append({
+                    "start": round(segment.start + self.current_audio_position, 3),
+                    "end": round(segment.end + self.current_audio_position, 3),
+                    "text": segment.text.strip(),
+                })
+
+                if segment.words:
+                    for word in segment.words:
+                        word_list.append({
+                            "word": word.word.strip(),
+                            "start": round(word.start + self.current_audio_position, 3),
+                            "end": round(word.end + self.current_audio_position, 3),
+                            "probability": round(word.probability, 3),
+                        })
+
+            text = " ".join(text_parts).strip()
+
+            if not text:
+                return None
+
+            proc_time = time.time() - proc_start
+            self.total_processing_time += proc_time
+
+            # Update state
+            self.full_transcript.append(text)
+            self.word_count += len(text.split())
+            self.detected_language = info.language
+
+            # Diarization
+            diarization_data = None
+            if self.diarizer:
+                diarize_start = time.time()
+                speaker_segments = self.diarizer.diarize(audio_np, SAMPLE_RATE)
+                diarize_time = (time.time() - diarize_start) * 1000
+
+                if speaker_segments:
+                    # Adjust timestamps
+                    for seg in speaker_segments:
+                        seg.start += self.current_audio_position
+                        seg.end += self.current_audio_position
+
+                    diarization_data = {
+                        "current_speaker": self.diarizer.get_current_speaker(speaker_segments),
+                        "segments": [
+                            {"speaker": s.speaker, "start": s.start, "end": s.end}
+                            for s in speaker_segments
+                        ],
+                        "speakers": self.diarizer.get_speakers_list(),
+                        "processing_ms": round(diarize_time, 1),
+                    }
+
+            # Calculate timestamps
+            chunk_start = self.current_audio_position
+            chunk_end = chunk_start + chunk_duration
+            self.current_audio_position = chunk_end
+
+            # Calculate metrics
+            rtf = proc_time / chunk_duration if chunk_duration > 0 else 0
+            session_duration = time.time() - self.start_time
+            wpm = (self.word_count / session_duration * 60) if session_duration > 0 else 0
+
+            return {
+                "type": "final" if is_final else "partial",
+                "text": text,
+                "full_transcript": self.get_full_transcript(),
+                "timing": {
+                    "start": round(chunk_start, 3),
+                    "end": round(chunk_end, 3),
+                    "duration": round(chunk_duration, 3),
+                },
+                "segments": segment_list,
+                "words": word_list,
+                "language": {
+                    "detected": info.language,
+                    "probability": round(info.language_probability, 3),
+                    "requested": self.language or "auto",
+                },
+                "diarization": diarization_data,
+                "vad": {
+                    "is_speech": True,
+                    "speech_ratio": round(speech_ratio, 2),
+                    "segments": [{"start": s.start, "end": s.end} for s in vad_segments],
+                },
+                "processing": {
+                    "latency_ms": round(proc_time * 1000, 1),
+                    "rtf": round(rtf, 3),
+                    "chunk_index": self.chunk_count,
+                },
+                "stats": {
+                    "word_count": self.word_count,
+                    "wpm": round(wpm, 1),
+                    "total_audio_sec": round(self.total_audio_duration, 2),
+                    "total_proc_ms": round(self.total_processing_time * 1000, 1),
+                    "total_speakers": len(self.diarizer.speakers) if self.diarizer else 0,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Transcription error: {e}")
+            return None
+
+    async def flush(self) -> Optional[dict]:
+        """Process remaining audio."""
+        if len(self.audio_buffer) < SAMPLE_RATE * BYTES_PER_SAMPLE * MIN_SPEECH_DURATION:
+            return None
+
+        chunk = bytes(self.audio_buffer)
+        self.audio_buffer.clear()
+
+        return await self._transcribe_chunk(chunk, is_final=True)
+
+    def get_full_transcript(self) -> str:
+        """Get complete transcript."""
+        return " ".join(self.full_transcript)
+
+
+# =============================================================================
+# HTML Frontend
+# =============================================================================
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Faster-Whisper Streaming ASR</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+               margin: 0; padding: 20px; background: #1a1a2e; color: #eee; }
+        .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1400px; margin: 0 auto; }
+        .panel { background: #16213e; border-radius: 12px; padding: 20px; }
+        h1 { color: #00d4ff; margin: 0 0 5px 0; font-size: 24px; }
+        h2 { color: #00d4ff; margin: 0 0 15px 0; font-size: 16px; border-bottom: 1px solid #0f3460; padding-bottom: 10px; }
+        .subtitle { color: #888; margin-bottom: 15px; font-size: 13px; }
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px; }
+        .badge-green { background: #1b4332; color: #95d5b2; }
+        .badge-blue { background: #0f3460; color: #00d4ff; }
+        .status { padding: 10px 15px; border-radius: 6px; margin: 10px 0; font-weight: 500; font-size: 13px; }
+        .connected { background: #1b4332; color: #95d5b2; }
+        .disconnected { background: #4a1515; color: #f8d7da; }
+        .recording { background: #4a3f15; color: #fff3cd; }
+        .controls { display: flex; gap: 8px; margin: 15px 0; flex-wrap: wrap; align-items: center; }
+        button { padding: 10px 18px; border: none; border-radius: 6px; cursor: pointer;
+                 font-size: 13px; font-weight: 500; transition: all 0.2s; font-family: inherit; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-primary { background: #0077b6; color: white; }
+        .btn-primary:hover:not(:disabled) { background: #005f8a; }
+        .btn-success { background: #2d6a4f; color: white; }
+        .btn-success:hover:not(:disabled) { background: #1b4332; }
+        .btn-danger { background: #9d0208; color: white; }
+        .btn-danger:hover:not(:disabled) { background: #6a040f; }
+        .btn-secondary { background: #4a4e69; color: white; }
+        select { padding: 8px 12px; border-radius: 6px; border: 1px solid #0f3460;
+                 font-size: 13px; background: #1a1a2e; color: #eee; }
+        #transcript { min-height: 200px; border: 2px solid #0f3460; border-radius: 8px;
+                     padding: 15px; margin: 15px 0; background: #0f3460; font-size: 15px; line-height: 1.6; }
+        .partial { color: #ffd166; font-style: italic; }
+        .speaker-label { color: #40916c; font-weight: bold; margin-right: 6px; }
+        .speaker-1 { color: #40916c; }
+        .speaker-2 { color: #f77f00; }
+        .speaker-3 { color: #9d4edd; }
+        .speaker-4 { color: #00d4ff; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 15px 0; }
+        .stat-box { background: #0f3460; padding: 10px; border-radius: 6px; text-align: center; }
+        .stat-label { font-size: 11px; color: #888; margin-bottom: 4px; }
+        .stat-value { font-size: 18px; color: #00d4ff; font-weight: bold; }
+        .energy-bar { height: 8px; background: #0f3460; border-radius: 4px; overflow: hidden; margin-top: 5px; }
+        .energy-level { height: 100%; background: linear-gradient(90deg, #2d6a4f, #40916c, #ffd166, #f77f00); transition: width 0.1s; }
+
+        .debug-panel { height: calc(100vh - 40px); display: flex; flex-direction: column; }
+        .debug-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .debug-controls { display: flex; gap: 8px; }
+        #debugLog { flex: 1; background: #0a0a14; border: 1px solid #0f3460; border-radius: 8px;
+                   padding: 10px; overflow-y: auto; font-family: 'Fira Code', 'Consolas', monospace;
+                   font-size: 11px; line-height: 1.5; }
+        .log-entry { padding: 4px 0; border-bottom: 1px solid #1a1a2e; }
+        .log-time { color: #666; margin-right: 8px; }
+        .log-send { color: #f77f00; }
+        .log-recv { color: #2ec4b6; }
+        .log-info { color: #888; }
+        .log-error { color: #ef476f; }
+        .log-data { color: #ffd166; margin-left: 20px; display: block; white-space: pre-wrap; word-break: break-all; max-height: 150px; overflow-y: auto; }
+
+        .protocol-info { background: #0f3460; border-radius: 8px; padding: 15px; margin-top: 15px; font-size: 12px; }
+        .protocol-info h3 { color: #00d4ff; margin: 0 0 10px 0; font-size: 14px; }
+        .protocol-info code { background: #1a1a2e; padding: 2px 6px; border-radius: 3px; color: #ffd166; }
+
+        @media (max-width: 1000px) {
+            .layout { grid-template-columns: 1fr; }
+            .debug-panel { height: 500px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <div class="panel">
+            <h1>Faster-Whisper Streaming ASR
+                <span class="badge badge-green">~4GB GPU</span>
+                <span class="badge badge-blue">MIT License</span>
+            </h1>
+            <p class="subtitle">Multilingual streaming ASR (EN/FR/DE) with VAD + Diarization | INT8 Quantized</p>
+
+            <div id="status" class="status disconnected">Disconnected</div>
+
+            <div class="controls">
+                <select id="language">
+                    <option value="auto">Auto-detect</option>
+                    <option value="en">English</option>
+                    <option value="de">German</option>
+                    <option value="fr">French</option>
+                    <option value="es">Spanish</option>
+                    <option value="it">Italian</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="nl">Dutch</option>
+                    <option value="ar">Arabic</option>
+                </select>
+                <button id="connectBtn" class="btn-primary" onclick="connect()">Connect</button>
+                <button id="startBtn" class="btn-success" onclick="startRecording()" disabled>Start Recording</button>
+                <button id="stopBtn" class="btn-danger" onclick="stopRecording()" disabled>Stop Recording</button>
+            </div>
+
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="stat-label">LANGUAGE</div>
+                    <div class="stat-value" id="langVal">-</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">CONFIDENCE</div>
+                    <div class="stat-value" id="langConf">-</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">LATENCY (ms)</div>
+                    <div class="stat-value" id="latency">-</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">RTF</div>
+                    <div class="stat-value" id="rtfVal">-</div>
+                </div>
+            </div>
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="stat-label">WORDS</div>
+                    <div class="stat-value" id="wordCount">0</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">WPM</div>
+                    <div class="stat-value" id="wpmVal">-</div>
+                </div>
+                <div class="stat-box" style="background: #1b4332;">
+                    <div class="stat-label">SPEAKER</div>
+                    <div class="stat-value" id="currentSpeaker">-</div>
+                </div>
+                <div class="stat-box" style="background: #1b4332;">
+                    <div class="stat-label">SPEAKERS</div>
+                    <div class="stat-value" id="speakerCount">0</div>
+                </div>
+            </div>
+            <div class="stats" style="grid-template-columns: repeat(3, 1fr);">
+                <div class="stat-box">
+                    <div class="stat-label">VAD</div>
+                    <div class="stat-value" id="vadStatus">-</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">SPEECH %</div>
+                    <div class="stat-value" id="speechRatio">-</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">AUDIO TIME</div>
+                    <div class="stat-value" id="audioTime">0s</div>
+                </div>
+            </div>
+
+            <h2>Transcript</h2>
+            <div id="transcript"></div>
+
+            <div class="protocol-info">
+                <h3>WebSocket Protocol</h3>
+                <p><strong>Endpoint:</strong> <code>wss://canary.dudoxx.com/asr?language=auto</code></p>
+                <p><strong>Audio Format:</strong> PCM Int16, 16kHz, Mono</p>
+                <p><strong>Model:</strong> faster-whisper large-v3 (INT8)</p>
+                <p><strong>Features:</strong> VAD, Diarization, Word timestamps, Auto punctuation</p>
+            </div>
+        </div>
+
+        <div class="panel debug-panel">
+            <div class="debug-header">
+                <h2 style="margin:0; border:none; padding:0;">Debug Log</h2>
+                <div class="debug-controls">
+                    <button class="btn-secondary" onclick="clearLog()">Clear</button>
+                    <button class="btn-secondary" onclick="copyLog()">Copy</button>
+                    <label style="font-size:12px; color:#888;">
+                        <input type="checkbox" id="autoScroll" checked> Auto-scroll
+                    </label>
+                </div>
+            </div>
+            <div id="debugLog"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let mediaStream = null;
+        let audioContext = null;
+        let processor = null;
+        let isRecording = false;
+        let chunkCount = 0;
+        let bytesSent = 0;
+        let transcriptHistory = [];
+        let lastSpeaker = null;
+
+        function log(type, direction, data) {
+            const debugLog = document.getElementById('debugLog');
+            const time = new Date().toISOString().substr(11, 12);
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+
+            let dirClass = 'log-info';
+            let dirLabel = '[INFO]';
+            if (direction === 'send') { dirClass = 'log-send'; dirLabel = '[SEND]'; }
+            else if (direction === 'recv') { dirClass = 'log-recv'; dirLabel = '[RECV]'; }
+            else if (direction === 'error') { dirClass = 'log-error'; dirLabel = '[ERROR]'; }
+
+            let dataStr = '';
+            if (data !== undefined) {
+                if (typeof data === 'object') {
+                    dataStr = '<span class="log-data">' + JSON.stringify(data, null, 2) + '</span>';
+                } else {
+                    dataStr = '<span class="log-data">' + data + '</span>';
+                }
+            }
+
+            entry.innerHTML = '<span class="log-time">' + time + '</span><span class="' + dirClass + '">' + dirLabel + '</span> ' + type + dataStr;
+            debugLog.appendChild(entry);
+
+            if (document.getElementById('autoScroll').checked) {
+                debugLog.scrollTop = debugLog.scrollHeight;
+            }
+        }
+
+        function clearLog() { document.getElementById('debugLog').innerHTML = ''; }
+        function copyLog() { navigator.clipboard.writeText(document.getElementById('debugLog').innerText); }
+
+        function updateStatus(status) {
+            const el = document.getElementById('status');
+            el.className = 'status ' + status;
+            const texts = { connected: 'Connected', disconnected: 'Disconnected', recording: 'Recording...' };
+            el.textContent = texts[status] || status;
+        }
+
+        function connect() {
+            const lang = document.getElementById('language').value;
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = protocol + '//' + location.host + '/asr?language=' + lang;
+
+            log('Connecting', 'info', wsUrl);
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                log('Connected', 'recv');
+                updateStatus('connected');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('startBtn').disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                log('Message', 'recv', data);
+
+                if (data.type === 'partial' || data.type === 'final') {
+                    // Update transcript
+                    const speaker = data.diarization?.current_speaker;
+                    let html = '';
+
+                    if (data.full_transcript) {
+                        html = data.full_transcript;
+                        if (speaker && speaker !== lastSpeaker) {
+                            html = '<span class="speaker-label">[' + speaker + ']</span> ' + html;
+                        }
+                        lastSpeaker = speaker;
+                    }
+
+                    if (data.type === 'partial') {
+                        html += '<span class="partial"> ' + (data.text || '') + '</span>';
+                    }
+
+                    document.getElementById('transcript').innerHTML = html;
+
+                    // Update stats
+                    if (data.language) {
+                        document.getElementById('langVal').textContent = (data.language.detected || '-').toUpperCase();
+                        document.getElementById('langConf').textContent = data.language.probability ? Math.round(data.language.probability * 100) + '%' : '-';
+                    }
+                    if (data.processing) {
+                        document.getElementById('latency').textContent = data.processing.latency_ms || '-';
+                        document.getElementById('rtfVal').textContent = data.processing.rtf || '-';
+                    }
+                    if (data.stats) {
+                        document.getElementById('wordCount').textContent = data.stats.word_count || 0;
+                        document.getElementById('wpmVal').textContent = data.stats.wpm || '-';
+                        document.getElementById('audioTime').textContent = (data.stats.total_audio_sec || 0).toFixed(1) + 's';
+                        document.getElementById('speakerCount').textContent = data.stats.total_speakers || 0;
+                    }
+                    if (data.diarization) {
+                        document.getElementById('currentSpeaker').textContent = data.diarization.current_speaker || '-';
+                    }
+                    if (data.vad) {
+                        document.getElementById('vadStatus').textContent = data.vad.is_speech ? 'SPEECH' : 'SILENT';
+                        document.getElementById('speechRatio').textContent = Math.round(data.vad.speech_ratio * 100) + '%';
+                    }
+                }
+            };
+
+            ws.onclose = () => {
+                log('Disconnected', 'recv');
+                updateStatus('disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('startBtn').disabled = true;
+                stopRecording();
+            };
+
+            ws.onerror = (err) => { log('Error', 'error', err.message); };
+        }
+
+        async function startRecording() {
+            if (isRecording) return;
+
+            try {
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+                });
+
+                audioContext = new AudioContext({ sampleRate: 16000 });
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                processor = audioContext.createScriptProcessor(2048, 1, 1);
+
+                processor.onaudioprocess = (e) => {
+                    if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    const pcm = new Int16Array(inputData.length);
+
+                    for (let i = 0; i < inputData.length; i++) {
+                        const s = Math.max(-1, Math.min(1, inputData[i]));
+                        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+
+                    ws.send(pcm.buffer);
+                    chunkCount++;
+                    bytesSent += pcm.buffer.byteLength;
+
+                    if (chunkCount % 20 === 0) {
+                        log('Audio chunk #' + chunkCount, 'send', { bytes: pcm.buffer.byteLength });
+                    }
+                };
+
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+
+                isRecording = true;
+                chunkCount = 0;
+                bytesSent = 0;
+                lastSpeaker = null;
+                updateStatus('recording');
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+
+                log('Recording started', 'info');
+
+            } catch (err) {
+                log('Microphone error', 'error', err.message);
+            }
+        }
+
+        function stopRecording() {
+            if (!isRecording && !processor) return;
+
+            isRecording = false;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(new ArrayBuffer(0));
+            }
+
+            if (processor) processor.disconnect();
+            if (audioContext) audioContext.close();
+            if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+
+            updateStatus('connected');
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+
+            log('Recording stopped', 'info');
+        }
+
+        log('Page loaded', 'info');
+    </script>
+</body>
+</html>
+"""
+
+
+# =============================================================================
+# Routes
+# =============================================================================
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve demo page."""
+    return HTML_TEMPLATE
+
+
+@app.websocket("/asr")
+async def websocket_asr(websocket: WebSocket, language: str = "auto"):
+    """WebSocket endpoint for streaming ASR."""
+    await websocket.accept()
+    logger.info(f"WebSocket connected, language: {language}")
+
+    processor = FasterWhisperStreamingProcessor(language=language)
+
+    try:
+        await websocket.send_json({
+            "type": "config",
+            "language": language,
+            "model": f"faster-whisper {WHISPER_MODEL}",
+            "compute_type": WHISPER_COMPUTE_TYPE,
+            "vad_enabled": True,
+            "diarization_enabled": ENABLE_DIARIZATION,
+        })
+
+        while True:
+            message = await websocket.receive_bytes()
+
+            if not message:
+                result = await processor.flush()
+                if result:
+                    await websocket.send_json(result)
+                break
+
+            result = await processor.process_chunk(message)
+            if result:
+                await websocket.send_json(result)
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+
+
+@app.post("/v1/audio/transcriptions")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(default="auto"),
+):
+    """Transcribe uploaded audio file."""
+    async with request_semaphore:
+        try:
+            import tempfile
+            import os as os_module
+
+            content = await file.read()
+
+            # Save to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+                f.write(content)
+                temp_path = f.name
+
+            try:
+                whisper = get_whisper_model()
+                if whisper is None:
+                    return JSONResponse(status_code=500, content={"error": "Model not loaded"})
+
+                segments, info = whisper.transcribe(
+                    temp_path,
+                    language=language if language != "auto" else None,
+                    beam_size=5,
+                    word_timestamps=True,
+                )
+
+                text_parts = []
+                for segment in segments:
+                    text_parts.append(segment.text.strip())
+
+                return {
+                    "text": " ".join(text_parts),
+                    "language": info.language,
+                    "language_probability": round(info.language_probability, 3),
+                }
+
+            finally:
+                os_module.unlink(temp_path)
+
+        except Exception as e:
+            logger.error(f"Transcription error: {e}")
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/health")
+async def health():
+    """Health check."""
+    whisper = get_whisper_model()
+    vad = get_vad_model()
+    diarize = get_diarization_pipeline()
+
+    return {
+        "status": "healthy" if whisper else "degraded",
+        "model": f"faster-whisper {WHISPER_MODEL}",
+        "compute_type": WHISPER_COMPUTE_TYPE,
+        "whisper_loaded": whisper is not None,
+        "vad_loaded": vad is not None,
+        "diarization_loaded": diarize is not None,
+        "languages": list(SUPPORTED_LANGUAGES.keys()),
+    }
+
+
+@app.get("/api/languages")
+async def get_languages():
+    """Get supported languages."""
+    return {"languages": SUPPORTED_LANGUAGES}
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+if __name__ == "__main__":
+    import argparse
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Faster-Whisper Streaming ASR Server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=4400, help="Port to listen on")
+    args = parser.parse_args()
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
