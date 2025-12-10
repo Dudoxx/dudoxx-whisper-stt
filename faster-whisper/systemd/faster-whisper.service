@@ -5,15 +5,13 @@ After=network.target
 [Service]
 Type=simple
 User=optron
-Group=optron
 WorkingDirectory=/opt/faster-whisper
+Environment="PATH=/opt/faster-whisper/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/opt/faster-whisper/venv/lib/python3.11/site-packages/ctranslate2.libs"
 EnvironmentFile=/opt/faster-whisper/.env
-Environment="CUDA_VISIBLE_DEVICES=0"
-
-ExecStart=/opt/faster-whisper/venv/bin/python /opt/faster-whisper/streaming_server.py --port 4400
-
+ExecStart=/opt/faster-whisper/venv/bin/python streaming_server.py --port 4400
 Restart=always
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

@@ -58,7 +58,7 @@ WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")  # int8 fo
 # Audio Configuration
 SAMPLE_RATE = 16000
 BYTES_PER_SAMPLE = 2
-CHUNK_DURATION_SECONDS = 2.0  # Process every 2 seconds
+CHUNK_DURATION_SECONDS = float(os.environ.get("CHUNK_DURATION", "5.0"))  # Process every 5 seconds (prevents hallucinations)
 CHUNK_SIZE_BYTES = int(CHUNK_DURATION_SECONDS * SAMPLE_RATE * BYTES_PER_SAMPLE)
 
 # VAD Configuration
@@ -71,6 +71,69 @@ ENABLE_DIARIZATION = os.environ.get("ENABLE_DIARIZATION", "true").lower() == "tr
 HF_TOKEN = os.environ.get("HF_TOKEN")
 MIN_SPEAKERS = 1
 MAX_SPEAKERS = 6
+
+# Entity Recognition Configuration
+ENABLE_NER = os.environ.get("ENABLE_NER", "true").lower() == "true"
+
+# Smart Formatting Configuration
+ENABLE_SMART_FORMAT = os.environ.get("ENABLE_SMART_FORMAT", "true").lower() == "true"
+
+# Hotwords Configuration - Custom vocabulary for better recognition
+# Format: comma-separated list of words/phrases
+HOTWORDS = os.environ.get("HOTWORDS", "Dudoxx,Walid,Boudabbous,Walid Boudabbous").split(",")
+HOTWORDS = [w.strip() for w in HOTWORDS if w.strip()]
+
+# Vocabulary Correction - Map common misrecognitions to correct forms
+# Format: JSON string {"misrecognition": "correct", ...}
+# These are applied AFTER transcription to fix known errors
+VOCAB_CORRECTIONS_RAW = os.environ.get("VOCAB_CORRECTIONS", "{}")
+try:
+    import json
+    VOCAB_CORRECTIONS: dict[str, str] = json.loads(VOCAB_CORRECTIONS_RAW)
+except json.JSONDecodeError:
+    VOCAB_CORRECTIONS = {}
+
+# Default corrections for Dudoxx (common Whisper misrecognitions)
+DEFAULT_CORRECTIONS = {
+    # Dudoxx variations
+    "didak": "Dudoxx",
+    "didaks": "Dudoxx's",
+    "didak's": "Dudoxx's",
+    "dudok": "Dudoxx",
+    "dudoks": "Dudoxx's",
+    "dudok's": "Dudoxx's",
+    "due dogs": "Dudoxx",
+    "due dog": "Dudoxx",
+    "do docks": "Dudoxx",
+    "do dock": "Dudoxx",
+    "dudox": "Dudoxx",
+    "dew docks": "Dudoxx",
+    "dew dock": "Dudoxx",
+    "do dox": "Dudoxx",
+    "doodox": "Dudoxx",
+    "dodo x": "Dudoxx",
+    "du dox": "Dudoxx",
+    "du dogs": "Dudoxx",
+    "two dogs": "Dudoxx",
+    "tu docks": "Dudoxx",
+    "g-docs": "Dudoxx",
+    "g-doc": "Dudoxx",
+    "gdocs": "Dudoxx",
+    "d-dox": "Dudoxx",
+    "ddox": "Dudoxx",
+    "d dox": "Dudoxx",
+    "dee dox": "Dudoxx",
+    # Medical context corrections (passion→patient is common Whisper error)
+    "passion": "patient",
+    "passions": "patients",
+    "my passion": "my patient",
+    "the passion": "the patient",
+    "a passion": "a patient",
+}
+# Merge with env config (env takes precedence)
+for k, v in DEFAULT_CORRECTIONS.items():
+    if k not in VOCAB_CORRECTIONS:
+        VOCAB_CORRECTIONS[k] = v
 
 # Concurrency
 MAX_CONCURRENT_REQUESTS = 8
@@ -98,6 +161,8 @@ SUPPORTED_LANGUAGES = {
 _whisper_model = None
 _vad_model = None
 _diarization_pipeline = None
+_ner_model = None
+_smart_format_model = None
 
 
 def get_whisper_model():
@@ -154,6 +219,295 @@ def get_diarization_pipeline():
     return _diarization_pipeline if _diarization_pipeline else None
 
 
+def get_ner_model():
+    """Lazy-load GLiNER NER model for entity recognition."""
+    global _ner_model
+    if _ner_model is None and ENABLE_NER:
+        try:
+            from gliner import GLiNER
+            # Use multilingual model for EN/FR/DE support
+            _ner_model = GLiNER.from_pretrained("urchade/gliner_multi-v2.1")
+            logger.info("GLiNER NER model loaded (multilingual)")
+        except ImportError:
+            logger.warning("GLiNER not installed. Run: pip install gliner")
+            _ner_model = False
+        except Exception as e:
+            logger.warning(f"Failed to load GLiNER: {e}")
+            _ner_model = False
+    return _ner_model if _ner_model else None
+
+
+def get_smart_format_model():
+    """Lazy-load small LLM for smart formatting."""
+    global _smart_format_model
+    if _smart_format_model is None and ENABLE_SMART_FORMAT:
+        try:
+            from transformers import pipeline
+            import torch
+
+            # Use a small, fast model for formatting
+            # Qwen2.5-0.5B is excellent for this task
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            _smart_format_model = pipeline(
+                "text2text-generation",
+                model="google/flan-t5-small",  # 80MB, very fast
+                device=device,
+                max_length=512,
+            )
+            logger.info("Smart formatting model loaded (flan-t5-small)")
+        except ImportError:
+            logger.warning("Transformers not installed for smart formatting")
+            _smart_format_model = False
+        except Exception as e:
+            logger.warning(f"Failed to load smart format model: {e}")
+            _smart_format_model = False
+    return _smart_format_model if _smart_format_model else None
+
+
+# =============================================================================
+# Entity Recognition Helper
+# =============================================================================
+
+# Entity labels for GLiNER (descriptive labels work better)
+NER_LABELS = [
+    "person name",
+    "company name",
+    "organization",
+    "city",
+    "country",
+    "date",
+    "time",
+    "money amount",
+    "phone number",
+    "email address",
+    "medical term",
+    "medication",
+]
+
+
+class EntityRecognizer:
+    """Process text with GLiNER for named entity recognition."""
+
+    def __init__(self):
+        self.model = get_ner_model()
+        self.threshold = 0.3  # Lower threshold for better recall
+
+    def extract_entities(self, text: str, language: str = "en") -> list[dict]:
+        """Extract entities from text."""
+        if self.model is None or not text.strip():
+            return []
+
+        try:
+            entities = self.model.predict_entities(
+                text,
+                NER_LABELS,
+                threshold=self.threshold,
+            )
+
+            result = []
+            for ent in entities:
+                result.append({
+                    "text": ent["text"],
+                    "label": ent["label"],
+                    "score": round(ent["score"], 3),
+                    "start": ent["start"],
+                    "end": ent["end"],
+                })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"NER error: {e}")
+            return []
+
+
+# =============================================================================
+# Fuzzy Hotword Matching
+# =============================================================================
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    prev_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (c1 != c2)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+    return prev_row[-1]
+
+
+def similarity_ratio(s1: str, s2: str) -> float:
+    """Calculate similarity ratio (0-1) between two strings."""
+    if not s1 or not s2:
+        return 0.0
+    max_len = max(len(s1), len(s2))
+    distance = levenshtein_distance(s1.lower(), s2.lower())
+    return 1.0 - (distance / max_len)
+
+
+def apply_fuzzy_hotword_corrections(text: str, threshold: float = 0.7) -> tuple[str, list[dict]]:
+    """
+    Apply fuzzy matching to correct words similar to hotwords.
+    Uses Levenshtein distance with configurable similarity threshold.
+    """
+    if not text or not HOTWORDS:
+        return text, []
+
+    corrections_made = []
+    words = text.split()
+    result_words = []
+
+    for word in words:
+        # Strip punctuation for matching but preserve it
+        clean_word = word.strip(".,!?;:'\"()-")
+        prefix = word[:len(word) - len(word.lstrip(".,!?;:'\"()-"))]
+        suffix = word[len(clean_word) + len(prefix):]
+
+        best_match = None
+        best_similarity = threshold
+
+        for hotword in HOTWORDS:
+            # For multi-word hotwords, skip single word matching
+            if " " in hotword:
+                continue
+
+            sim = similarity_ratio(clean_word, hotword)
+            if sim > best_similarity and sim < 1.0:  # Not exact match (handled by vocab corrections)
+                best_match = hotword
+                best_similarity = sim
+
+        if best_match:
+            # Preserve original casing style if possible
+            if clean_word.isupper():
+                corrected = best_match.upper()
+            elif clean_word.islower():
+                corrected = best_match.lower()
+            elif clean_word[0].isupper():
+                corrected = best_match.capitalize()
+            else:
+                corrected = best_match
+
+            corrections_made.append({
+                "original": clean_word,
+                "corrected": corrected,
+                "similarity": round(best_similarity, 2),
+                "type": "fuzzy_hotword",
+            })
+            result_words.append(prefix + corrected + suffix)
+        else:
+            result_words.append(word)
+
+    return " ".join(result_words), corrections_made
+
+
+# =============================================================================
+# Vocabulary Correction Helper
+# =============================================================================
+
+def apply_vocab_corrections(text: str) -> tuple[str, list[dict]]:
+    """
+    Apply vocabulary corrections to fix common misrecognitions.
+    Returns (corrected_text, list_of_corrections_made).
+    Case-insensitive matching, preserves original casing style.
+    """
+    if not text or not VOCAB_CORRECTIONS:
+        return text, []
+
+    corrections_made = []
+    result = text
+
+    # Sort by length (longer phrases first) to avoid partial replacements
+    sorted_corrections = sorted(VOCAB_CORRECTIONS.items(), key=lambda x: len(x[0]), reverse=True)
+
+    for wrong, correct in sorted_corrections:
+        # Case-insensitive search
+        lower_result = result.lower()
+        lower_wrong = wrong.lower()
+
+        start = 0
+        while True:
+            idx = lower_result.find(lower_wrong, start)
+            if idx == -1:
+                break
+
+            # Check word boundaries (don't replace partial words)
+            before_ok = idx == 0 or not lower_result[idx - 1].isalnum()
+            after_idx = idx + len(wrong)
+            after_ok = after_idx >= len(lower_result) or not lower_result[after_idx].isalnum()
+
+            if before_ok and after_ok:
+                # Get the original text that was matched
+                original = result[idx:idx + len(wrong)]
+
+                # Apply correction
+                result = result[:idx] + correct + result[idx + len(wrong):]
+                lower_result = result.lower()
+
+                corrections_made.append({
+                    "original": original,
+                    "corrected": correct,
+                    "position": idx,
+                })
+
+                # Move past this correction
+                start = idx + len(correct)
+            else:
+                start = idx + 1
+
+    return result, corrections_made
+
+
+# =============================================================================
+# Smart Formatting Helper
+# =============================================================================
+
+class SmartFormatter:
+    """AI-based smart formatting for transcriptions."""
+
+    def __init__(self):
+        self.model = get_smart_format_model()
+
+    def format_text(self, text: str, language: str = "en") -> str:
+        """Apply smart formatting to text."""
+        if self.model is None or not text.strip():
+            return text
+
+        try:
+            # Prompt for formatting
+            lang_name = {"en": "English", "fr": "French", "de": "German"}.get(language, "English")
+            prompt = f"""Format this {lang_name} transcription properly:
+- Convert spoken numbers to digits (twenty three -> 23)
+- Format dates properly (march fifth -> March 5th)
+- Format times properly (three thirty pm -> 3:30 PM)
+- Format currency (fifty dollars -> $50)
+- Keep proper nouns capitalized
+- Do not change the meaning
+
+Text: {text}
+Formatted:"""
+
+            result = self.model(prompt, max_length=len(text) + 100, do_sample=False)
+            formatted = result[0]["generated_text"].strip()
+
+            # Sanity check - don't return if too different
+            if len(formatted) > len(text) * 2 or len(formatted) < len(text) * 0.3:
+                return text
+
+            return formatted
+
+        except Exception as e:
+            logger.error(f"Smart format error: {e}")
+            return text
+
+
 # =============================================================================
 # Preload Models at Startup
 # =============================================================================
@@ -162,6 +516,8 @@ def get_diarization_pipeline():
 async def startup():
     """Preload models at startup."""
     logger.info("Preloading models...")
+    logger.info(f"Hotwords configured: {HOTWORDS}")
+    logger.info(f"Vocabulary corrections: {len(VOCAB_CORRECTIONS)} patterns loaded")
 
     # Load Whisper
     model = get_whisper_model()
@@ -180,6 +536,18 @@ async def startup():
             logger.info("Pyannote diarization ready")
     elif ENABLE_DIARIZATION:
         logger.warning("Diarization enabled but HF_TOKEN not set")
+
+    # Load NER model
+    if ENABLE_NER:
+        ner = get_ner_model()
+        if ner:
+            logger.info("GLiNER NER ready")
+
+    # Load smart formatting model
+    if ENABLE_SMART_FORMAT:
+        fmt = get_smart_format_model()
+        if fmt:
+            logger.info("Smart formatting ready")
 
     logger.info("All models loaded")
 
@@ -306,8 +674,12 @@ class DiarizationProcessor:
                 max_speakers=MAX_SPEAKERS,
             )
 
+            # Pyannote 4.x returns DiarizeOutput with speaker_diarization attribute
+            # (which is an Annotation object with itertracks method)
+            diarization = getattr(result, 'speaker_diarization', result)
+
             segments = []
-            for turn, _, speaker in result.itertracks(yield_label=True):
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
                 # Track speaker labels
                 if speaker not in self.speakers:
                     self.speaker_count += 1
@@ -367,6 +739,14 @@ class FasterWhisperStreamingProcessor:
         self.whisper = get_whisper_model()
         self.vad = SileroVADProcessor()
         self.diarizer = DiarizationProcessor() if ENABLE_DIARIZATION else None
+        self.ner = EntityRecognizer() if ENABLE_NER else None
+        self.formatter = SmartFormatter() if ENABLE_SMART_FORMAT else None
+
+        # Hotwords for custom vocabulary
+        self.hotwords = " ".join(HOTWORDS) if HOTWORDS else None
+
+        # All detected entities across session
+        self.all_entities: list[dict] = []
 
         # Statistics
         self.start_time = time.time()
@@ -410,12 +790,13 @@ class FasterWhisperStreamingProcessor:
         if not should_process:
             return None
 
-        # Extract chunk
+        # Extract chunk (clean 5-second chunks, no overlap to prevent repetition)
         if is_final:
             chunk = bytes(self.audio_buffer)
             self.audio_buffer.clear()
         else:
             chunk = bytes(self.audio_buffer[:CHUNK_SIZE_BYTES])
+            # Remove processed chunk completely (no overlap)
             self.audio_buffer = self.audio_buffer[CHUNK_SIZE_BYTES:]
 
         # Process chunk
@@ -444,8 +825,10 @@ class FasterWhisperStreamingProcessor:
         proc_start = time.time()
 
         try:
-            segments, info = self.whisper.transcribe(
-                audio_np,
+            # Build transcribe kwargs
+            # NOTE: initial_prompt causes hallucinations - removed!
+            # We rely on hotwords + post-processing vocab corrections instead
+            transcribe_kwargs = dict(
                 language=self.language,
                 beam_size=5,
                 word_timestamps=True,
@@ -455,6 +838,12 @@ class FasterWhisperStreamingProcessor:
                     speech_pad_ms=200,
                 ),
             )
+
+            # Add hotwords if configured (boosts recognition of custom vocabulary)
+            if self.hotwords:
+                transcribe_kwargs["hotwords"] = self.hotwords
+
+            segments, info = self.whisper.transcribe(audio_np, **transcribe_kwargs)
 
             # Collect results
             text_parts = []
@@ -483,6 +872,18 @@ class FasterWhisperStreamingProcessor:
 
             if not text:
                 return None
+
+            # Apply vocabulary corrections (fix common misrecognitions)
+            text, vocab_corrections = apply_vocab_corrections(text)
+
+            # Apply fuzzy hotword corrections (catch similar-sounding words)
+            text, fuzzy_corrections = apply_fuzzy_hotword_corrections(text)
+            vocab_corrections.extend(fuzzy_corrections)
+
+            # Also update segment texts with corrections
+            for seg in segment_list:
+                seg["text"], _ = apply_vocab_corrections(seg["text"])
+                seg["text"], _ = apply_fuzzy_hotword_corrections(seg["text"])
 
             proc_time = time.time() - proc_start
             self.total_processing_time += proc_time
@@ -515,6 +916,45 @@ class FasterWhisperStreamingProcessor:
                         "processing_ms": round(diarize_time, 1),
                     }
 
+            # Entity Recognition (NER)
+            entities_data = None
+            if self.ner:
+                ner_start = time.time()
+                chunk_entities = self.ner.extract_entities(text, info.language)
+                ner_time = (time.time() - ner_start) * 1000
+
+                if chunk_entities:
+                    # Track all entities across session
+                    for ent in chunk_entities:
+                        # Add to session entities if not duplicate
+                        if not any(e["text"] == ent["text"] and e["label"] == ent["label"]
+                                   for e in self.all_entities):
+                            self.all_entities.append(ent)
+
+                    entities_data = {
+                        "chunk_entities": chunk_entities,
+                        "session_entities": self.all_entities,
+                        "processing_ms": round(ner_time, 1),
+                    }
+
+            # Smart Formatting
+            formatted_text = text
+            formatting_data = None
+            if self.formatter and is_final:  # Only format final chunks to save processing
+                format_start = time.time()
+                formatted_text = self.formatter.format_text(text, info.language)
+                format_time = (time.time() - format_start) * 1000
+
+                if formatted_text != text:
+                    formatting_data = {
+                        "original": text,
+                        "formatted": formatted_text,
+                        "processing_ms": round(format_time, 1),
+                    }
+                    # Update full transcript with formatted text
+                    if self.full_transcript:
+                        self.full_transcript[-1] = formatted_text
+
             # Calculate timestamps
             chunk_start = self.current_audio_position
             chunk_end = chunk_start + chunk_duration
@@ -527,7 +967,7 @@ class FasterWhisperStreamingProcessor:
 
             return {
                 "type": "final" if is_final else "partial",
-                "text": text,
+                "text": formatted_text if formatting_data else text,
                 "full_transcript": self.get_full_transcript(),
                 "timing": {
                     "start": round(chunk_start, 3),
@@ -542,6 +982,8 @@ class FasterWhisperStreamingProcessor:
                     "requested": self.language or "auto",
                 },
                 "diarization": diarization_data,
+                "entities": entities_data,
+                "formatting": formatting_data,
                 "vad": {
                     "is_speech": True,
                     "speech_ratio": round(speech_ratio, 2),
@@ -551,6 +993,10 @@ class FasterWhisperStreamingProcessor:
                     "latency_ms": round(proc_time * 1000, 1),
                     "rtf": round(rtf, 3),
                     "chunk_index": self.chunk_count,
+                    "hotwords_enabled": bool(self.hotwords),
+                    "ner_enabled": self.ner is not None,
+                    "formatting_enabled": self.formatter is not None,
+                    "vocab_corrections": vocab_corrections if vocab_corrections else None,
                 },
                 "stats": {
                     "word_count": self.word_count,
@@ -558,6 +1004,7 @@ class FasterWhisperStreamingProcessor:
                     "total_audio_sec": round(self.total_audio_duration, 2),
                     "total_proc_ms": round(self.total_processing_time * 1000, 1),
                     "total_speakers": len(self.diarizer.speakers) if self.diarizer else 0,
+                    "total_entities": len(self.all_entities),
                 },
             }
 
@@ -618,9 +1065,18 @@ HTML_TEMPLATE = """
         .btn-secondary { background: #4a4e69; color: white; }
         select { padding: 8px 12px; border-radius: 6px; border: 1px solid #0f3460;
                  font-size: 13px; background: #1a1a2e; color: #eee; }
-        #transcript { min-height: 200px; border: 2px solid #0f3460; border-radius: 8px;
-                     padding: 15px; margin: 15px 0; background: #0f3460; font-size: 15px; line-height: 1.6; }
-        .partial { color: #ffd166; font-style: italic; }
+        #transcript { min-height: 200px; max-height: 500px; overflow-y: auto; border: 2px solid #0f3460; border-radius: 8px;
+                     padding: 15px; margin: 15px 0; background: #0f3460; font-size: 15px; line-height: 1.6; scroll-behavior: smooth; }
+        .partial { color: #ffd166; font-style: italic; animation: pulse 1.5s ease-in-out infinite; }
+        .segment-block { margin-bottom: 12px; animation: fadeIn 0.3s ease-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
         .speaker-label { color: #40916c; font-weight: bold; margin-right: 6px; }
         .speaker-1 { color: #40916c; }
         .speaker-2 { color: #f77f00; }
@@ -650,6 +1106,21 @@ HTML_TEMPLATE = """
         .protocol-info { background: #0f3460; border-radius: 8px; padding: 15px; margin-top: 15px; font-size: 12px; }
         .protocol-info h3 { color: #00d4ff; margin: 0 0 10px 0; font-size: 14px; }
         .protocol-info code { background: #1a1a2e; padding: 2px 6px; border-radius: 3px; color: #ffd166; }
+
+        .entity-tag { display: inline-block; padding: 2px 6px; border-radius: 3px; margin: 2px; font-size: 11px; }
+        .entity-person { background: #1b4332; color: #95d5b2; }
+        .entity-org { background: #0f3460; color: #00d4ff; }
+        .entity-location { background: #4a3f15; color: #ffd166; }
+        .entity-date { background: #4a1515; color: #f8d7da; }
+        .entity-other { background: #2d2d44; color: #aaa; }
+        .correction-item { padding: 3px 0; border-bottom: 1px solid #1a1a2e; }
+        .correction-original { color: #f77f00; text-decoration: line-through; }
+        .correction-arrow { color: #666; margin: 0 6px; }
+        .correction-fixed { color: #40916c; font-weight: bold; }
+        .transcript-entity { padding: 1px 4px; border-radius: 3px; }
+        .transcript-entity-person { background: rgba(27, 67, 50, 0.5); border-bottom: 2px solid #40916c; }
+        .transcript-entity-org { background: rgba(15, 52, 96, 0.5); border-bottom: 2px solid #00d4ff; }
+        .transcript-entity-location { background: rgba(74, 63, 21, 0.5); border-bottom: 2px solid #ffd166; }
 
         @media (max-width: 1000px) {
             .layout { grid-template-columns: 1fr; }
@@ -739,6 +1210,25 @@ HTML_TEMPLATE = """
             <h2>Transcript</h2>
             <div id="transcript"></div>
 
+            <div class="stats" style="grid-template-columns: 1fr 1fr; margin-top: 15px;">
+                <div class="stat-box" style="text-align: left;">
+                    <div class="stat-label">DETECTED ENTITIES</div>
+                    <div id="entitiesContainer" style="font-size: 12px; margin-top: 8px; max-height: 100px; overflow-y: auto;"></div>
+                </div>
+                <div class="stat-box" style="text-align: left;">
+                    <div class="stat-label">CORRECTIONS APPLIED</div>
+                    <div id="correctionsContainer" style="font-size: 12px; margin-top: 8px; max-height: 100px; overflow-y: auto;"></div>
+                </div>
+            </div>
+
+            <div style="margin-top: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <h2 style="margin:0; border:none; padding:0;">Renderer Log (Client-Side)</h2>
+                    <button class="btn-secondary" onclick="clearRendererLog()" style="padding: 4px 10px; font-size: 11px;">Clear</button>
+                </div>
+                <div id="rendererLog" style="background: #0a0a14; border: 1px solid #0f3460; border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto; font-family: 'Fira Code', 'Consolas', monospace; font-size: 11px; line-height: 1.5;"></div>
+            </div>
+
             <div class="protocol-info">
                 <h3>WebSocket Protocol</h3>
                 <p><strong>Endpoint:</strong> <code>wss://canary.dudoxx.com/asr?language=auto</code></p>
@@ -771,8 +1261,39 @@ HTML_TEMPLATE = """
         let isRecording = false;
         let chunkCount = 0;
         let bytesSent = 0;
-        let transcriptHistory = [];
+        let transcriptSegments = [];  // Store all final segments with speaker and timestamp
         let lastSpeaker = null;
+        let allCorrections = [];
+        let cumulativeCorrections = [];  // Track all corrections made
+
+        function formatTimestamp(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return mins + ':' + (secs < 10 ? '0' : '') + secs;
+        }
+
+        function rendererLog(message, data) {
+            const rendererLogDiv = document.getElementById('rendererLog');
+            const time = new Date().toISOString().substr(11, 12);
+            const entry = document.createElement('div');
+            entry.style.padding = '3px 0';
+            entry.style.borderBottom = '1px solid #1a1a2e';
+
+            let content = '<span style="color: #666;">' + time + '</span> ';
+            content += '<span style="color: #2ec4b6;">' + message + '</span>';
+            if (data !== undefined) {
+                content += '<br><span style="color: #ffd166; margin-left: 10px; font-size: 10px;">' + JSON.stringify(data) + '</span>';
+            }
+            entry.innerHTML = content;
+
+            rendererLogDiv.appendChild(entry);
+            rendererLogDiv.scrollTop = rendererLogDiv.scrollHeight;
+        }
+
+        function clearRendererLog() {
+            document.getElementById('rendererLog').innerHTML = '';
+            rendererLog('Renderer log cleared');
+        }
 
         function log(type, direction, data) {
             const debugLog = document.getElementById('debugLog');
@@ -829,27 +1350,84 @@ HTML_TEMPLATE = """
             };
 
             ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                log('Message', 'recv', data);
+                try {
+                    const data = JSON.parse(event.data);
+                    log('Message', 'recv', data);
 
-                if (data.type === 'partial' || data.type === 'final') {
-                    // Update transcript
-                    const speaker = data.diarization?.current_speaker;
-                    let html = '';
+                    if (data.type === 'partial' || data.type === 'final') {
+                        const speaker = data.diarization?.current_speaker || 'Speaker 1';
 
-                    if (data.full_transcript) {
-                        html = data.full_transcript;
-                        if (speaker && speaker !== lastSpeaker) {
-                            html = '<span class="speaker-label">[' + speaker + ']</span> ' + html;
+                        rendererLog('📥 Received ' + data.type, {
+                            text: data.text,
+                            speaker: speaker,
+                            timestamp: data.timing?.start
+                        });
+
+                        // Add final segments to history
+                        if (data.type === 'final' && data.segments) {
+                            rendererLog('💾 Storing ' + data.segments.length + ' final segment(s)', {
+                                before: transcriptSegments.length,
+                                adding: data.segments.length
+                            });
+
+                            data.segments.forEach(seg => {
+                                transcriptSegments.push({
+                                    text: seg.text,
+                                    speaker: speaker,
+                                    timestamp: seg.start
+                                });
+                            });
+
+                            rendererLog('✓ Total segments: ' + transcriptSegments.length);
                         }
-                        lastSpeaker = speaker;
-                    }
 
-                    if (data.type === 'partial') {
-                        html += '<span class="partial"> ' + (data.text || '') + '</span>';
-                    }
+                        // Build HTML from segments
+                        rendererLog('🎨 Building HTML...', {segments: transcriptSegments.length});
+                        let html = '';
 
-                    document.getElementById('transcript').innerHTML = html;
+                        // Render all final segments
+                        transcriptSegments.forEach((seg, idx) => {
+                            const speakerNum = seg.speaker.replace('Speaker ', '');
+                            const speakerClass = 'speaker-' + Math.min(parseInt(speakerNum) || 1, 4);
+                            const timeStr = formatTimestamp(seg.timestamp);
+
+                            html += '<div class="segment-block">';
+                            html += '<strong class="speaker-label ' + speakerClass + '">' + seg.speaker + '</strong><br>';
+                            html += '<span style="color: #666; font-size: 11px;">' + timeStr + '</span><br>';
+                            html += '<span>' + seg.text + '</span>';
+                            html += '</div>';
+                        });
+
+                        // Add partial text if available
+                        if (data.type === 'partial' && data.text) {
+                            const speakerNum = speaker.replace('Speaker ', '');
+                            const speakerClass = 'speaker-' + Math.min(parseInt(speakerNum) || 1, 4);
+                            const currentTime = data.timing?.start || 0;
+                            const timeStr = formatTimestamp(currentTime);
+
+                            html += '<div class="segment-block">';
+                            html += '<strong class="speaker-label ' + speakerClass + '">' + speaker + '</strong><br>';
+                            html += '<span style="color: #666; font-size: 11px;">' + timeStr + '</span><br>';
+                            html += '<span class="partial">Listening...<br>' + data.text + '</span>';
+                            html += '</div>';
+                        }
+
+                        rendererLog('📝 Rendering to DOM', {
+                            html_length: html.length,
+                            has_partial: data.type === 'partial'
+                        });
+
+                        const transcriptDiv = document.getElementById('transcript');
+                        transcriptDiv.innerHTML = html;
+
+                        // Auto-scroll to bottom when new content appears
+                        transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+
+                        rendererLog('✅ Rendered successfully', {
+                            scroll_height: transcriptDiv.scrollHeight,
+                            visible_segments: transcriptSegments.length
+                        });
+                    }
 
                     // Update stats
                     if (data.language) {
@@ -873,6 +1451,54 @@ HTML_TEMPLATE = """
                         document.getElementById('vadStatus').textContent = data.vad.is_speech ? 'SPEECH' : 'SILENT';
                         document.getElementById('speechRatio').textContent = Math.round(data.vad.speech_ratio * 100) + '%';
                     }
+
+                    // Update entities display
+                    if (data.entities && data.entities.session_entities) {
+                        const entitiesContainer = document.getElementById('entitiesContainer');
+                        const uniqueEntities = {};
+                        data.entities.session_entities.forEach(e => {
+                            const key = e.text + ':' + e.label;
+                            if (!uniqueEntities[key] || e.score > uniqueEntities[key].score) {
+                                uniqueEntities[key] = e;
+                            }
+                        });
+
+                        let entitiesHtml = '';
+                        Object.values(uniqueEntities).forEach(e => {
+                            let cls = 'entity-other';
+                            if (e.label.includes('person')) cls = 'entity-person';
+                            else if (e.label.includes('org') || e.label.includes('company')) cls = 'entity-org';
+                            else if (e.label.includes('city') || e.label.includes('country') || e.label.includes('location')) cls = 'entity-location';
+                            else if (e.label.includes('date') || e.label.includes('time')) cls = 'entity-date';
+                            entitiesHtml += '<span class="entity-tag ' + cls + '">' + e.text + ' <small>(' + e.label + ')</small></span>';
+                        });
+                        entitiesContainer.innerHTML = entitiesHtml || '<span style="color:#666">No entities detected</span>';
+                    }
+
+                    // Update corrections display (cumulative)
+                    if (data.processing && data.processing.vocab_corrections) {
+                        // Add new corrections to cumulative list
+                        data.processing.vocab_corrections.forEach(c => {
+                            // Check if not already in list
+                            if (!cumulativeCorrections.some(cc => cc.original === c.original && cc.corrected === c.corrected)) {
+                                cumulativeCorrections.push(c);
+                            }
+                        });
+
+                        const correctionsContainer = document.getElementById('correctionsContainer');
+                        let correctionsHtml = '';
+                        cumulativeCorrections.forEach(c => {
+                            const typeLabel = c.type === 'fuzzy_hotword' ? ' (fuzzy)' : '';
+                            correctionsHtml += '<div class="correction-item">' +
+                                '<span class="correction-original">' + c.original + '</span>' +
+                                '<span class="correction-arrow">→</span>' +
+                                '<span class="correction-fixed">' + c.corrected + typeLabel + '</span></div>';
+                        });
+                        correctionsContainer.innerHTML = correctionsHtml || '<span style="color:#666">No corrections applied</span>';
+                    }
+                } catch (error) {
+                    rendererLog('❌ ERROR: ' + error.message);
+                    console.error('Full error:', error);
                 }
             };
 
@@ -914,8 +1540,9 @@ HTML_TEMPLATE = """
                     chunkCount++;
                     bytesSent += pcm.buffer.byteLength;
 
-                    if (chunkCount % 20 === 0) {
-                        log('Audio chunk #' + chunkCount, 'send', { bytes: pcm.buffer.byteLength });
+                    // Reduced logging - only log every 100th chunk to avoid spam
+                    if (chunkCount % 100 === 0) {
+                        log('Audio streaming', 'info', { chunks: chunkCount, total_bytes: bytesSent });
                     }
                 };
 
@@ -926,10 +1553,19 @@ HTML_TEMPLATE = """
                 chunkCount = 0;
                 bytesSent = 0;
                 lastSpeaker = null;
+                transcriptSegments = [];  // Reset transcript history
+                cumulativeCorrections = [];  // Reset corrections
+                document.getElementById('entitiesContainer').innerHTML = '<span style="color:#666">No entities detected</span>';
+                document.getElementById('correctionsContainer').innerHTML = '<span style="color:#666">No corrections applied</span>';
                 updateStatus('recording');
                 document.getElementById('startBtn').disabled = true;
                 document.getElementById('stopBtn').disabled = false;
 
+                rendererLog('🎙️ Recording started', {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    bufferSize: 2048
+                });
                 log('Recording started', 'info');
 
             } catch (err) {
@@ -958,6 +1594,10 @@ HTML_TEMPLATE = """
         }
 
         log('Page loaded', 'info');
+        rendererLog('🚀 Renderer initialized', {
+            browser: navigator.userAgent.split(' ').pop(),
+            timestamp: new Date().toISOString()
+        });
     </script>
 </body>
 </html>
@@ -1069,6 +1709,8 @@ async def health():
     whisper = get_whisper_model()
     vad = get_vad_model()
     diarize = get_diarization_pipeline()
+    ner = get_ner_model()
+    formatter = get_smart_format_model()
 
     return {
         "status": "healthy" if whisper else "degraded",
@@ -1077,6 +1719,9 @@ async def health():
         "whisper_loaded": whisper is not None,
         "vad_loaded": vad is not None,
         "diarization_loaded": diarize is not None,
+        "ner_loaded": ner is not None,
+        "smart_format_loaded": formatter is not None,
+        "hotwords": HOTWORDS,
         "languages": list(SUPPORTED_LANGUAGES.keys()),
     }
 
