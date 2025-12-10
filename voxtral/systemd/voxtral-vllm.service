@@ -1,0 +1,33 @@
+[Unit]
+Description=Voxtral vLLM Backend Server
+After=network.target
+
+[Service]
+Type=simple
+User=optron
+Group=optron
+WorkingDirectory=/opt/voxtral
+EnvironmentFile=/opt/voxtral/.env
+Environment="CUDA_VISIBLE_DEVICES=0"
+
+# vLLM server with Voxtral Mini 3B
+# CUDA 12 libs bundled with vLLM pip package - no system CUDA needed
+ExecStart=/opt/voxtral/venv/bin/python -m vllm.entrypoints.openai.api_server \
+    --model mistralai/Voxtral-Mini-3B-2507 \
+    --host 127.0.0.1 \
+    --port 4310 \
+    --tokenizer-mode mistral \
+    --config-format mistral \
+    --load-format mistral \
+    --max-model-len 8192 \
+    --gpu-memory-utilization 0.60 \
+    --dtype float16 \
+    --enable-chunked-prefill \
+    --max-num-seqs 16 \
+    --disable-log-requests
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

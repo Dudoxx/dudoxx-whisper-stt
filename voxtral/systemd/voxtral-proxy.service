@@ -1,0 +1,20 @@
+[Unit]
+Description=Voxtral Streaming Proxy Server
+After=network.target voxtral-vllm.service
+Requires=voxtral-vllm.service
+
+[Service]
+Type=simple
+User=optron
+Group=optron
+WorkingDirectory=/opt/voxtral
+EnvironmentFile=/opt/voxtral/.env
+
+# Streaming proxy with VAD, diarization, NER
+ExecStart=/opt/voxtral/venv/bin/python /opt/voxtral/voxtral_streaming_server.py --port 4302
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
