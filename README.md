@@ -36,8 +36,8 @@ Dudoxx Whisper STT is a real-time speech-to-text service optimized for healthcar
 
 ```bash
 # Clone the repository
-git clone https://github.com/Dudoxx/dudoxx-whisper-stt.git
-cd dudoxx-whisper-stt
+git clone https://github.com/Dudoxx/ddx-ai-whisper.git
+cd ddx-ai-whisper
 
 # Create virtual environment
 python3 -m venv venv
@@ -140,7 +140,7 @@ This service integrates with the Dudoxx FHIR Clinic Platform for:
 ### Project Structure
 
 ```
-dudoxx-whisper-stt/
+ddx-ai-whisper/
 ├── whisperlivekit/           # Core library
 │   ├── basic_server.py       # FastAPI server
 │   ├── audio_processor.py    # Audio processing
@@ -170,14 +170,14 @@ uvicorn whisperlivekit.basic_server:app --reload --port 4300
 
 ```bash
 # Build image (CPU)
-docker build -f Dockerfile.cpu -t dudoxx-whisper-stt .
+docker build -f Dockerfile.cpu -t ddx-ai-whisper .
 
 # Run container
-docker run -p 4300:8000 --name dudoxx-stt dudoxx-whisper-stt --model base --language en
+docker run -p 4300:8000 --name dudoxx-stt ddx-ai-whisper --model base --language en
 
 # With GPU support
-docker build -t dudoxx-whisper-stt .
-docker run --gpus all -p 4300:8000 --name dudoxx-stt dudoxx-whisper-stt
+docker build -t ddx-ai-whisper .
+docker run --gpus all -p 4300:8000 --name dudoxx-stt ddx-ai-whisper
 ```
 
 ## Credits
