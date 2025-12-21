@@ -8,6 +8,11 @@
   <strong>Port:</strong> 4300 | <strong>EXPERIMENTAL</strong> | <strong>Self-Hosted</strong>
 </p>
 
+## Repo Policy
+
+- Default branch: `main`
+- This repository is used as a submodule of `dudoxx-hapifihr` (see `../.gitmodules`)
+
 <p align="center">
   Ultra-low-latency, self-hosted speech-to-text for healthcare applications
 </p>

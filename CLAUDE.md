@@ -5,6 +5,11 @@
 **Author:** Walid Boudabbous, Founder and CTO of Dudoxx UG, CEO of Acceleate.com  
 **Status:** EXPERIMENTAL - Self-Hosted Speech-to-Text
 
+## Repo Policy
+
+- Default branch: `main`
+- This repository is used as a submodule of `dudoxx-hapifihr` (see `../.gitmodules`)
+
 ---
 
 ## 🚀 System Overview

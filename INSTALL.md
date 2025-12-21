@@ -1,6 +1,11 @@
 # Dudoxx Whisper STT - Installation Guide
 
 **Version:** 6.0.0  
+
+## Repo Policy
+
+- Default branch: `main`
+- This repository is used as a submodule of `dudoxx-hapifihr` (see `../.gitmodules`)
 **Date:** December 12, 2025  
 **Author:** Walid Boudabbous, Founder and CTO of Dudoxx UG, CEO of Acceleate.com
 
